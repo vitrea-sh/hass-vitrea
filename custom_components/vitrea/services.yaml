@@ -1,0 +1,11 @@
+turn_on_with_timer:
+  name: Turn on with timer
+  target:
+    entity:
+      domain: switch
+  fields:
+    minutes:
+      description: 'Number of minutes to keep the switch on'
+      required: true
+      type: integer
+      default: 60
