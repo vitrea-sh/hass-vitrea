@@ -1,19 +1,21 @@
 # vbox_controller.py
+import asyncio
+import contextlib
 import datetime
+import logging
 import socket
-from typing import Any
 from collections.abc import Callable
-from .vbox_connection import VBoxConnection
-from .control_api.responses import parse_response
+from typing import Any
+
 from .control_api.commands import (
-    GetControllerVersionCommand,
     AuthenticateCommand,
+    GetControllerVersionCommand,
     GetFullStatusCommand,
 )
+from .control_api.responses import parse_response
 from .parameter_api import VitreaDatabaseReaderV3 as VitreaDatabaseReader
-from .utils.const import SUPPORTED_VERSIONS
-import logging
-import asyncio
+from .utils.const import SUPPORTED_VERSIONS, UPGRADEABLE_VERSIONS
+from .vbox_connection import VBoxConnection
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -60,11 +62,10 @@ class VBoxController:
         self.enabled = enabled
         self._db_initialized = False
         self.database = None
-        self.watchdog_task = None
-        self.last_incoming_message = None
-        self.response_handler_thread = None
-        self.response_queue = []
-        self.response_handler_task = None
+        self.watchdog_task: asyncio.Task | None = None
+        self.last_incoming_message: datetime.datetime | None = None
+        self.response_handler_task: asyncio.Task | None = None
+        self._response_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=512)
 
     async def _connection_change_callback(self, connected):
         """Handle connection state changes."""
@@ -74,13 +75,13 @@ class VBoxController:
 
     async def _health_check(self) -> bool:
         """Check if controller is healthy based on recent activity."""
-        if not self.last_incoming_message:
+        if not self.connection.is_healthy():
             return False
+        if not self.last_incoming_message:
+            return True
         if (datetime.datetime.now() - self.last_incoming_message).seconds > 50:
             return False
-        if self.connection.communication_task.done():
-            return False
-        if self.response_handler_thread and self.response_handler_thread.done():
+        if self.response_handler_task and self.response_handler_task.done():
             return False
         return True
 
@@ -94,16 +95,14 @@ class VBoxController:
                 )
                 await self.connection.request_reconnect()
             if self.response_handler_task is None or self.response_handler_task.done():
-                if (
-                    self.response_handler_task
-                    and self.response_handler_task.exception()
-                ):
+                if self.response_handler_task and self.response_handler_task.exception():
                     _LOGGER.error(
                         "Response handler task crashed: %s",
                         self.response_handler_task.exception(),
                     )
                 self.response_handler_task = asyncio.create_task(
-                    self.response_thread_loop()
+                    self.response_thread_loop(),
+                    name="vitrea-response-handler",
                 )
             await asyncio.sleep(30)
         await self.connection.close()
@@ -147,7 +146,8 @@ class VBoxController:
             raise ConnectionError("Could not connect to Vitrea")
         if self.response_handler_task is None or self.response_handler_task.done():
             self.response_handler_task = asyncio.create_task(
-                self.response_thread_loop()
+                self.response_thread_loop(),
+                name="vitrea-response-handler",
             )
         if not self.database and not ignore_db:
             await self.read_vitrea_db()
@@ -190,24 +190,33 @@ class VBoxController:
                         parsed_response = parse_response(data)
                         if parsed_response.get("type", None) != "version":
                             continue
+                        minor_version = parsed_response.get("minor_version", 0)
+                        major_version = parsed_response.get("major_version", 0)
+                        
                         result["version"] = (
-                            str(parsed_response.get("major_version", 0))
+                            str(major_version)
                             + "."
-                            + str(parsed_response.get("minor_version", 0))
+                            + str(minor_version)
                         )
-                        if parsed_response.get(
-                            "minor_version", 0
-                        ) < SUPPORTED_VERSIONS.get(
-                            parsed_response.get("major_version", 0), 200
+                        
+                        if minor_version >= SUPPORTED_VERSIONS.get(
+                            major_version, 200
                         ):
-                            result["reason"] = "unsupported_version"
-                        else:
                             result["supported"] = True
+                        else:
+                            result["supported"] = False
+                            if major_version in UPGRADEABLE_VERSIONS:
+                                if minor_version >= UPGRADEABLE_VERSIONS.get(major_version, 200):
+                                    result["reason"] = "unsupported_version_upgrade_optional"
+                                else:
+                                    result["reason"] = "unsupported_version"
+                            else:
+                                result["reason"] = "unsupported_version"
                         break
                     s.close()
                     result["supports_led_commands"] = (
-                        parsed_response.get("major_version", 0) >= 9
-                        or parsed_response.get("major_version", 0) < 1
+                        major_version >= 9
+                        or major_version < 1
                     )
                     _LOGGER.debug(result)
                     return result
@@ -219,6 +228,16 @@ class VBoxController:
     async def close(self):
         """Close the controller."""
         self.enabled = False
+        if self.watchdog_task:
+            self.watchdog_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self.watchdog_task
+            self.watchdog_task = None
+        if self.response_handler_task:
+            self.response_handler_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self.response_handler_task
+            self.response_handler_task = None
         await self.connection.close()
         return True
 
@@ -248,33 +267,39 @@ class VBoxController:
 
     async def on_response(self, response):
         """Handle incoming response from the controller in a threaded manner."""
-        self.response_queue.append(response)
+        try:
+            self._response_queue.put_nowait(response)
+        except asyncio.QueueFull:
+            _LOGGER.warning("Dropping response due to full queue")
         return True
 
     async def response_thread_loop(self):
         """Loop to handle incoming responses from the controller in a threaded manner."""
         response_tasks = set[Any]()
         while self.enabled:
-            pending = list[bytes](self.response_queue)
-            self.response_queue.clear()
-            for response in pending:
-                task = asyncio.create_task(self._response_task(response))
+            try:
+                response = await asyncio.wait_for(
+                    self._response_queue.get(), timeout=1
+                )
+            except asyncio.TimeoutError:
+                continue
 
-                def _log_done(t: asyncio.Task) -> None:
-                    try:
-                        result = t.result()
-                        _LOGGER.debug(
-                            "Response handler finished successfully: %s", result
-                        )
-                    except Exception as err:  # noqa: BLE001
-                        _LOGGER.warning("Response handler finished with error: %s", err)
+            task = asyncio.create_task(self._response_task(response))
 
-                task.add_done_callback(_log_done)
-                response_tasks.add(task)
-            # Remove done tasks
+            def _log_done(t: asyncio.Task) -> None:
+                try:
+                    result = t.result()
+                    _LOGGER.debug(
+                        "Response handler finished successfully: %s", result
+                    )
+                except Exception as err:  # noqa: BLE001
+                    _LOGGER.warning("Response handler finished with error: %s", err)
+
+            task.add_done_callback(_log_done)
+            response_tasks.add(task)
+
             done = {t for t in response_tasks if t.done()}
             response_tasks.difference_update(done)
-            await asyncio.sleep(0.01)
 
     async def _response_task(self, response):
         """Handle incoming response from the controller."""

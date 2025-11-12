@@ -69,9 +69,9 @@ async def async_get_triggers(
         if not options:
             options = []
         if "Short" in options:
-            triggers.append({**base_trigger, CONF_TYPE: "Short Press"})
+            triggers.append({**base_trigger, CONF_TYPE: "Short"})
         if "Long" in options:
-            triggers.append({**base_trigger, CONF_TYPE: "Long Press"})
+            triggers.append({**base_trigger, CONF_TYPE: "Long"})
         if "Release" in options:
             triggers.append({**base_trigger, CONF_TYPE: "Release"})
     return triggers
@@ -86,9 +86,9 @@ async def async_attach_trigger(
     """Attach a trigger."""
     # TODO Implement your own logic to attach triggers.
     # Use the existing state or event triggers from the automation integration.
-    if config[CONF_TYPE] == "Short Press":
+    if config[CONF_TYPE] == "Short":
         to_state = "Short"
-    elif config[CONF_TYPE] == "Long Press":
+    elif config[CONF_TYPE] == "Long":
         to_state = "Long"
     elif config[CONF_TYPE] == "Release":
         to_state = "Release"

@@ -6,3 +6,8 @@ SUPPORTED_VERSIONS = {
     0: 00,
     10: 00,
 }
+
+UPGRADEABLE_VERSIONS = {
+    7: 91,
+    8: 0,
+}

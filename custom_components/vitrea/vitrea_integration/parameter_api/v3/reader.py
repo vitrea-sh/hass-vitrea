@@ -145,7 +145,8 @@ class VitreaDatabaseReader:
         self._sequential_callback = SequentialCallback(self)
 
     async def send_command(
-        self, command_generator: BaseParameterCommandGenerator, timeout: float = 5.0
+        self, command_generator: BaseParameterCommandGenerator, timeout: float = 1.0, current_attempt: int = 0, 
+        max_attempts: int = 3,
     ):
         """
         Send a command and wait for its response before allowing next command.
@@ -161,6 +162,8 @@ class VitreaDatabaseReader:
             TimeoutError: If response not received within timeout period
         """
         _LOGGER.debug("send_command() called for: %s", command_generator.command_number)
+        if current_attempt >= max_attempts:
+            raise TimeoutError(f"Max attempts reached for command {command_generator.command_number}")
         async with self.request_lock:
             # Wait for any pending request to complete
             if self.pending_request and not self.pending_request.done():
@@ -201,10 +204,8 @@ class VitreaDatabaseReader:
                 if self.pending_request is future:
                     self.pending_request = None
             if isinstance(e, asyncio.TimeoutError):
-                raise TimeoutError(
-                    f"Timeout waiting for response to command {command_generator.command_number}"
-                ) from e
-            raise
+                return await self.send_command(command_generator, timeout, current_attempt + 1, max_attempts)
+            raise e
 
     async def get_floors(self):
         """Request floor numbers from the controller."""

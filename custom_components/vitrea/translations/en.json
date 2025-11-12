@@ -3,7 +3,10 @@
         "flow_title": "Vitrea Gateway",
         "abort": {
             "no_devices_found": "No devices found on the network",
-            "single_instance_allowed": "Already configured. Only a single configuration possible."
+            "single_instance_allowed": "Already configured. Only a single configuration possible.",
+            "connection_error": "Connection error. Please check the IP address and port.",
+            "unsupported_version_upgrade_optional": "This version of the VBox is not supported. The current version is {current_version} and can be upgraded through Vitrea's Support.",
+            "unsupported_version": "This version of the VBox is not supported. The current version is {current_version}."
         },
         "step": {
             "user": {
@@ -20,7 +23,14 @@
     "device_automation": {
         "trigger_type": {
             "turned_off": "{entity_name} turned off",
-            "turned_on": "{entity_name} turned on"
+            "turned_on": "{entity_name} turned on",
+            "Short": "Short Press",
+            "Long": "Long Press",
+            "Release": "Release"
         }
+    },
+    "integration": {
+        "unsupported_version_upgrade_optional": "This version of the VBox is not supported. The current version is {current_version} and can be upgraded through Vitrea's Support.",
+        "unsupported_version": "This version of the VBox is not supported. The current version is {current_version}."
     }
 }
