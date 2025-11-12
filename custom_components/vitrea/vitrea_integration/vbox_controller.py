@@ -151,6 +151,7 @@ class VBoxController:
             )
         if not self.database and not ignore_db:
             await self.read_vitrea_db()
+            await self.update_state()
         if watchdog:
             self.watchdog_task = asyncio.create_task(self.watchdog_loop())
 
