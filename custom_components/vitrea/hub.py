@@ -1,5 +1,6 @@
 """Vitrea Hub class."""
 
+import asyncio
 import logging
 from numbers import Number
 
@@ -276,7 +277,12 @@ class VitreaHub:
                         add_timer=key_type == VitreaKeyTypes.Boiler.value,
                     )
                     self.devices[device._id] = device
-                    await device.get_state()
+                    # NOTE: Per-key GetKeyStatus is intentionally NOT requested here.
+                    # VBoxController.connect() already issued GetFullStatusCommand
+                    # (H:NALL:G) which returns the state of every key/output. Sending
+                    # a GetKeyStatus per device on top of that produced a large burst
+                    # (one request per light/switch/cover) that overwhelmed the VBox
+                    # controller on systems with many devices.
         for scenario in data.get("scenarios", []):
             room = scenario.get("room", None)
             if not room:
@@ -305,7 +311,11 @@ class VitreaHub:
                 append_room_to_name=self.append_room_name,
             )
             self.hvacs[tmst._id] = tmst
+            # Thermostats are not covered by GetFullStatus (H:NALL:G), so we
+            # still request their state individually. Space these requests
+            # out to avoid bursting the controller when many HVACs exist.
             await tmst.get_state()
+            await asyncio.sleep(0.1)
 
     @property
     def hub_id(self) -> str:

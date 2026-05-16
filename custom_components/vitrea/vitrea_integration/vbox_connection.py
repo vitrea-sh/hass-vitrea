@@ -38,6 +38,7 @@ class VBoxConnection:
         connection_callback: Callable | None = None,
         event_beat_seconds: int = 0.2,
         enabled=True,
+        min_send_interval: float = 0.08,
     ) -> None:
         self.ip = ip
         self.port = port
@@ -45,6 +46,10 @@ class VBoxConnection:
         self.writer = None
         self.command_queue: asyncio.Queue[bytes] = asyncio.Queue()
         self.event_beat_seconds = event_beat_seconds
+        # Minimum delay between two outbound frames. Vitrea VBox controllers
+        # can be overwhelmed by back-to-back commands (e.g. startup bursts),
+        # so the writer loop enforces this floor between sends.
+        self.min_send_interval = max(0.0, float(min_send_interval))
         self._connected = False
         self._last_keep_alive = None
         self.response_callback = response_callback
@@ -54,6 +59,9 @@ class VBoxConnection:
         self.last_keep_alive_sent = None
         self._connected_lock = threading.Lock()
         self._task_lock = threading.Lock()
+        # Serialize all actual socket writes so the writer loop and the
+        # monitor-loop keep-alive cannot interleave bytes on the wire.
+        self._send_lock = asyncio.Lock()
         # Timestamps and diagnostics
         self.last_rx = None
         self.last_tx = None
@@ -326,7 +334,13 @@ class VBoxConnection:
         _LOGGER.debug("Reader loop finished")
 
     async def _writer_loop(self) -> None:
-        """Continuously send queued commands to the controller."""
+        """Continuously send queued commands to the controller.
+
+        Enforces a minimum interval between outgoing frames so we do not
+        flood the VBox controller during startup bursts or rapid HA service
+        calls. The pacing is based on ``self.last_tx`` which is updated by
+        ``_send`` for both queued commands and keep-alive frames.
+        """
 
         while self.enabled and not self._stop_event.is_set():
             try:
@@ -338,8 +352,14 @@ class VBoxConnection:
 
             if not command:
                 continue
+
+            if self.min_send_interval and self.last_tx is not None:
+                elapsed = (datetime.now() - self.last_tx).total_seconds()
+                remaining = self.min_send_interval - elapsed
+                if remaining > 0:
+                    await asyncio.sleep(remaining)
+
             await self._send(command)
-            continue 
 
         _LOGGER.debug("Writer loop finished")
 
@@ -373,15 +393,20 @@ class VBoxConnection:
         _LOGGER.debug("Monitor loop finished")
 
     async def _send(self, command: bytes) -> bool:
-        """Send a command to the VBox."""
-        _LOGGER.debug(("sending(ascii):", command))
-        _LOGGER.debug(("sending(hex):", command.hex()))
-        if not self.writer:
-            raise ConnectionError("Connection is not available")
-        self.writer.write(command)
-        await self.writer.drain()
-        self.last_tx = datetime.now()
-        _LOGGER.debug("Command sent to VBox")
+        """Send a command to the VBox.
+
+        Serialized by ``_send_lock`` so the writer-loop and the monitor-loop
+        keep-alive cannot interleave bytes on the wire.
+        """
+        async with self._send_lock:
+            _LOGGER.debug(("sending(ascii):", command))
+            _LOGGER.debug(("sending(hex):", command.hex()))
+            if not self.writer:
+                raise ConnectionError("Connection is not available")
+            self.writer.write(command)
+            await self.writer.drain()
+            self.last_tx = datetime.now()
+            _LOGGER.debug("Command sent to VBox")
         return True
 
     async def _receive(self):

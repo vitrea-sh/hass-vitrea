@@ -38,17 +38,23 @@ class VBoxController:
         self,
         ip: str,
         port: int,
-        event_beat_seconds: int = 0.02,
-        thread_beat_seconds: int = 0.05,
+        event_beat_seconds: float = 0.1,
+        thread_beat_seconds: float = 0.05,
         status_update_callback=None,
         enabled=True,
+        min_send_interval: float = 0.08,
     ):
+        # event_beat_seconds previously defaulted to 0.02s which caused the
+        # reader/writer idle paths to spin very tightly. 0.1s is plenty
+        # responsive for a serial-style RS-485 gateway and noticeably
+        # reduces CPU + chance of write/read races.
         self.connection = VBoxConnection(
             ip=ip,
             port=port,
             event_beat_seconds=event_beat_seconds,
             connection_callback=self._connection_change_callback,
             response_callback=self.on_response,
+            min_send_interval=min_send_interval,
         )
         self.id = None
         self.communication_lock = asyncio.Lock()
