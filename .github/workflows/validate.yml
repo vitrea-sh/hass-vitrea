@@ -23,3 +23,6 @@ jobs:
       - uses: hacs/action@main
         with:
           category: integration
+          # Brand icon/logo are not published yet; remove this line once
+          # they are, so the check guards the HACS store listing.
+          ignore: brands

@@ -30,7 +30,6 @@ async def async_setup_entry(
 class SatelliteSensor(SensorEntity):
     _attr_device_class = SensorDeviceClass.ENUM
     _attr_options = ["Short", "Long", "Release"]
-    _attr_translation_key = "satellite_button"
     _attr_last_reset: datetime | None = None
     _attr_icon = "mdi:gesture-double-tap"
 

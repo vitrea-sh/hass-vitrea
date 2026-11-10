@@ -187,17 +187,6 @@
             }
         }
     },
-    "entity": {
-        "sensor": {
-            "satellite_button": {
-                "state": {
-                    "Short": "Short press",
-                    "Long": "Long press",
-                    "Release": "Released"
-                }
-            }
-        }
-    },
     "device_automation": {
         "trigger_type": {
             "turned_off": "{entity_name} turned off",
@@ -206,9 +195,5 @@
             "Long": "Long Press",
             "Release": "Release"
         }
-    },
-    "integration": {
-        "unsupported_version_upgrade_optional": "This version of the VBox is not supported. The current version is {version} and can be upgraded through Vitrea's Support.",
-        "unsupported_version": "This version of the VBox is not supported. The current version is {version}."
     }
 }
