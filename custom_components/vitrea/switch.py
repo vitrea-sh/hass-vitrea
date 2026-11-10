@@ -2,13 +2,17 @@
 
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import (
     entity_platform,
     config_validation as cv,
 )
+from homeassistant.helpers.device_registry import DeviceEntryType
+from homeassistant.helpers.restore_state import RestoreEntity
 
-from .const import DOMAIN
+from .const import DOMAIN, MULTIWAY_SUBENTRY_TYPES
+from .entity_debug import log_actuation
 from .hub import SatelliteButton, Switch, PushButton
 import voluptuous as vol
 
@@ -20,6 +24,12 @@ async def async_setup_entry(
 ):
     """Set up Vitrea switches."""
     hub = hass.data[DOMAIN][config_entry.entry_id]
+    link_manager = hass.data[DOMAIN].get(f"{config_entry.entry_id}_links")
+    if link_manager is not None and any(
+        subentry.subentry_type in MULTIWAY_SUBENTRY_TYPES
+        for subentry in config_entry.subentries.values()
+    ):
+        async_add_entities([VitreaMultiwayKillSwitch(hub, link_manager)])
     async_add_entities(
         VitreaSwitch(device)
         for device in hub.devices.values()
@@ -44,6 +54,70 @@ async def async_setup_entry(
         },
         "async_turn_on_with_timer",
     )
+
+
+class VitreaMultiwayKillSwitch(SwitchEntity, RestoreEntity):
+    """Master kill-switch for all Multiway links.
+
+    Turning it off tears every link down instantly — no key events, no
+    LED writes, no service calls can leak through while paused. Turning
+    it on rebuilds the links via the normal (record-only, warmed-up)
+    setup path, so resuming never actuates anything by itself. The state
+    is restored across restarts: links paused during an incident stay
+    paused until someone deliberately resumes them.
+    """
+
+    _attr_should_poll = False
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, hub, link_manager):
+        """Initialize the kill-switch."""
+        self._manager = link_manager
+        self._attr_name = "Multiway Links"
+        self._attr_unique_id = f"{hub.hub_id}-multiway-links-enabled"
+        self._attr_device_info = {
+            "identifiers": {(DOMAIN, f"{hub.hub_id}-multiway")},
+            "name": "Vitrea Multiway",
+            "manufacturer": "Vitrea",
+            "model": "Multiway links",
+            "entry_type": DeviceEntryType.SERVICE,
+        }
+
+    async def async_added_to_hass(self) -> None:
+        """Restore the paused state before the links are built."""
+        await super().async_added_to_hass()
+        last = await self.async_get_last_state()
+        if last is not None and last.state == "off":
+            self._manager.restore_paused()
+
+    @property
+    def is_on(self):
+        """Return true while the links are active."""
+        return self._manager.enabled
+
+    @property
+    def icon(self):
+        """Broken-link icon while paused."""
+        return "mdi:link-variant" if self.is_on else "mdi:link-variant-off"
+
+    @property
+    def available(self) -> bool:
+        """The kill-switch must work even while the hub is offline."""
+        return True
+
+    async def async_turn_on(self, **kwargs):
+        """Resume all Multiway links."""
+        log_actuation(self, "multiway.resume")
+        await self._manager.async_set_enabled(True)
+        self.async_write_ha_state()
+        return True
+
+    async def async_turn_off(self, **kwargs):
+        """Pause all Multiway links."""
+        log_actuation(self, "multiway.pause")
+        await self._manager.async_set_enabled(False)
+        self.async_write_ha_state()
+        return True
 
 
 class VitreaSwitch(SwitchEntity):
@@ -91,11 +165,13 @@ class VitreaSwitch(SwitchEntity):
 
     async def async_turn_on(self, **kwargs):
         """Turn the switch on."""
+        log_actuation(self, "switch.turn_on")
         await self._switch.turn_on()
         return True
 
     async def async_turn_off(self, **kwargs):
         """Turn the switch off."""
+        log_actuation(self, "switch.turn_off")
         await self._switch.turn_off()
         return True
 
@@ -141,11 +217,13 @@ class VitreaSatelliteIndicatorLed(SwitchEntity):
 
     async def async_turn_on(self, **kwargs):
         """Turn the switch on."""
+        log_actuation(self, "indicator.turn_on")
         await self._switch.turn_on_indicator()
         return True
 
     async def async_turn_off(self, **kwargs):
         """Turn the switch off."""
+        log_actuation(self, "indicator.turn_off")
         await self._switch.turn_off_indicator()
         return True
 
@@ -196,11 +274,13 @@ class VitreaPushButtonIndicatorLed(SwitchEntity):
 
     async def async_turn_on(self, **kwargs):
         """Turn the switch on."""
+        log_actuation(self, "indicator.turn_on")
         await self._switch.turn_on_indicator()
         return True
 
     async def async_turn_off(self, **kwargs):
         """Turn the switch off."""
+        log_actuation(self, "indicator.turn_off")
         await self._switch.turn_off_indicator()
         return True
 

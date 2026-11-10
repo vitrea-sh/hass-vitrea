@@ -14,6 +14,7 @@ from homeassistant.components.climate import (
     UnitOfTemperature,
 )
 from .const import DOMAIN
+from .entity_debug import log_actuation
 from .hub import Climate
 from .vitrea_integration.utils.enums import (
     ThermostatTemperatureModes,
@@ -180,14 +181,17 @@ class VitreaClimate(ClimateEntity):
 
     async def async_turn_on(self) -> None:
         """Turn the entity on."""
+        log_actuation(self, "climate.turn_on")
         await self._thermostat.turn_on()
 
     async def async_turn_off(self) -> None:
         """Turn the entity off."""
+        log_actuation(self, "climate.turn_off")
         await self._thermostat.turn_off()
 
     async def async_set_temperature(self, **kwargs: Any) -> None:
         """Set new target temperature."""
+        log_actuation(self, "climate.set_temperature")
         temperature = kwargs.get(ATTR_TEMPERATURE)
         await self._thermostat.turn_on(temperature=temperature)
 

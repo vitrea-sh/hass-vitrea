@@ -1,6 +1,10 @@
+import logging
+
 from ....utils.enums import CommandNumber, AirConditionerType
 from .base import BaseParameterResponseParser
 from ....models.database import AirConditionerModel
+
+_LOGGER = logging.getLogger(__name__)
 
 class ACNumbersParser(BaseParameterResponseParser):
     COMMAND_NUMBER = CommandNumber.GetACNumbers
@@ -24,11 +28,11 @@ class ACNumbersParser(BaseParameterResponseParser):
             from ..commands.acs import GetACParams
             await self.send_callback(GetACParams(self.acs_list[0]))
         return {"no_of_acs": self.number_of_acs}
-    
+
     def validate_data(self, number_of_acs, acs_list):
         if not number_of_acs == len(acs_list):
             raise ValueError("Number of acs does not match the number of acs in the list")
-    
+
 class ACParamsParser(BaseParameterResponseParser):
     COMMAND_NUMBER = CommandNumber.GetACParams
     SHOULD_WRITE = False
@@ -43,24 +47,51 @@ class ACParamsParser(BaseParameterResponseParser):
     async def parse_response(self):
         proccessed_data = await self.parse_raw()
         ac_id = await self._byte_list_to_hex(proccessed_data[:2])
-        ac_type = AirConditionerType(await self._ascii_digit_to_int(proccessed_data[2]))
-        room_id = await self._byte_list_to_hex(proccessed_data[3:5])
-        name_len = proccessed_data[5]
-        name_data = proccessed_data[6:]
+        ac_type, room_bytes, name_len, name_data = self._detect_layout(
+            proccessed_data, ac_id
+        )
+        room_id = await self._byte_list_to_hex(room_bytes)
         ac_name = await self.byte_list_to_string(name_data)
         self.validate_data(ac_name, name_len)
         result = [AirConditionerModel(id=ac_id, name=ac_name, type=ac_type, room_id=room_id)]
         # Queue next AC params request if any pending
         await self.send_callback.queue_next_ac()
         return result
-    
+
+    @staticmethod
+    def _detect_layout(data, ac_id):
+        """Resolve the AC parameters layout to (type, room bytes, name_len, name).
+
+        The spec (rev 2.108) promises AC_no(2), thermostat_type(1, one
+        ASCII digit '1'-'4'), room_no(2), name_len(1), name — but firmware
+        9.50 was observed in the field omitting the thermostat_type byte
+        entirely (AC_no, room_no, name_len, name). A binary 1-4 type byte
+        is accepted too, since the neighboring count fields already
+        deviate from ASCII to binary.
+        """
+        n = len(data)
+        type_byte = data[2] if n > 2 else None
+        if n >= 6 and 0x31 <= type_byte <= 0x34:
+            # Spec layout: ASCII '1'-'4'.
+            return (
+                AirConditionerType(type_byte - 0x30), data[3:5], data[5], data[6:]
+            )
+        if n >= 6 and 1 <= type_byte <= 4 and data[5] == n - 6:
+            # Spec layout with a binary type byte.
+            return AirConditionerType(type_byte), data[3:5], data[5], data[6:]
+        if n >= 5 and data[4] == n - 5:
+            # Firmware 9.50: no thermostat_type field at all. Assume Type 1
+            # (product decision) so the AC still gets its climate entity.
+            _LOGGER.warning(
+                "AC %d reports no thermostat type (firmware omitted the "
+                "field); assuming Type 1",
+                ac_id,
+            )
+            return AirConditionerType.TYPE_1, data[2:4], data[4], data[5:]
+        raise ValueError(
+            f"Unrecognized AC parameters layout: {bytes(data).hex()}"
+        )
+
     def validate_data(self, name, name_len):
         if not name_len / 2 == len(name):
             raise ValueError("Name length mismatch")
-        
-    @staticmethod
-    async def _ascii_digit_to_int(digit: int) -> int:
-        if not 48 <= digit <= 57:
-            raise ValueError("Not a digit")
-        return digit - 48
-

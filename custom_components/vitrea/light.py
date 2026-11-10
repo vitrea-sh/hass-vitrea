@@ -18,6 +18,7 @@ from homeassistant.util.percentage import (
 )
 
 from .const import DOMAIN
+from .entity_debug import log_actuation
 from .hub import Light, RoomOnLight, ToggleLight
 
 _LOGGER = logging.getLogger(__name__)
@@ -82,6 +83,7 @@ class VitreaLight(LightEntity):
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the light on."""
+        log_actuation(self, "light.turn_on")
         intensity = math.ceil(
             ranged_value_to_percentage(
                 BRIGHTNESS_SCALE, kwargs.get(ATTR_BRIGHTNESS, 255)
@@ -92,6 +94,7 @@ class VitreaLight(LightEntity):
 
     async def async_turn_off(self) -> None:
         """Turn the light off."""
+        log_actuation(self, "light.turn_off")
         await self._light.turn_off()
 
     @property
@@ -158,8 +161,10 @@ class VitreaOnOffLight(LightEntity):
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the light on."""
+        log_actuation(self, "light.turn_on")
         await self._device.turn_on()
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the light off."""
+        log_actuation(self, "light.turn_off")
         await self._device.turn_off()

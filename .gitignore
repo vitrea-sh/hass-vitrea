@@ -527,3 +527,9 @@ MigrationBackup/
 .ionide/
 
 # End of https://www.toptal.com/developers/gitignore/api/vs,python
+
+### macOS ###
+.DS_Store
+
+### Local release bundles ###
+*.zip

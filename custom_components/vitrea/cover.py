@@ -9,6 +9,7 @@ from homeassistant.components.cover import (
 )
 
 from .const import DOMAIN
+from .entity_debug import log_actuation
 from .hub import Cover
 
 
@@ -77,13 +78,17 @@ class VitreaCover(CoverEntity):
         return self._cover.is_closing
 
     async def async_open_cover(self, **kwargs):
+        log_actuation(self, "cover.open")
         await self._cover.blind_up()
 
     async def async_close_cover(self, **kwargs):
+        log_actuation(self, "cover.close")
         await self._cover.blind_down()
 
     async def async_stop_cover(self, **kwargs):
+        log_actuation(self, "cover.stop")
         await self._cover.stop()
 
     async def async_set_cover_position(self, **kwargs: Any) -> None:
+        log_actuation(self, "cover.set_position")
         await self._cover.set_location(kwargs["position"])

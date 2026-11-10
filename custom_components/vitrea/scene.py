@@ -3,6 +3,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_platform
 from .const import DOMAIN
+from .entity_debug import log_actuation
 from .hub import Scene as HubScene
 
 
@@ -53,4 +54,5 @@ class VitreaScene(Scene):
 
     async def async_activate(self, **kwargs):
         """Turn the scene on."""
+        log_actuation(self, "scene.activate")
         await self._scene.run()

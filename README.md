@@ -9,8 +9,41 @@ Vitrea integration for Home Assistant. Provides local control of Vitrea devices 
 - Supports UI config flow
 
 ## Requirements
-- Home Assistant 2023.8 or newer
+- Home Assistant 2025.3 or newer
 - Network access from Home Assistant to the Vitrea controller
+
+## Multiway links
+Bind physical Vitrea keys to any Home Assistant entity from the
+integration page ("Add" menu on the Vitrea entry):
+- **Satellite button link** — short press toggles the target entity,
+  optional long-press scene; the button LED follows the target's state
+  (controller firmware 9.5+).
+- **Satellite dimmer link** — short press toggles a light, holding the
+  button dims it up/down (direction alternates per hold; holding from
+  off ramps up gently from the configured minimum), and the LED follows
+  the light. Brightness range, step size and speed are configurable.
+- **Climate link** — a satellite button or toggle key bound to a climate
+  device: on (or a short press) recalls the device's last active HVAC
+  mode, off turns it off. Toggle keys stay in sync with the device;
+  button LEDs show whether it is running.
+- **Blind link** — a pair of satellite buttons (up/down) bound to a
+  cover: hold to move in the key's direction, hold again to stop; the
+  moving direction's LED is lit while the cover reports motion. A short
+  press tilts by a configurable step on tilt-capable covers, otherwise
+  it stops the cover.
+- **Toggle key link** — keeps a regular toggle key in sync with a target
+  entity. The HA entity is the master and the key is the slave: the key
+  always follows the entity, and pressing the key forwards the command
+  to the entity. Loop-safe by design: command echoes are suppressed,
+  reconciliation never writes to the master, and a safety breaker cuts
+  any residual on/off oscillation.
+
+When any link is configured, a **Multiway Links** kill-switch entity
+appears (on the "Vitrea Multiway" service device). Turning it off
+instantly pauses every link — no key press, LED write, or service call
+can leak through while paused — and the state survives restarts.
+Turning it back on rebuilds the links through their normal warm-up, so
+resuming never actuates anything by itself.
 
 ## Installation
 

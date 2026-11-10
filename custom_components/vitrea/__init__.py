@@ -12,6 +12,7 @@ from homeassistant.helpers import device_registry as dr
 
 from .const import DOMAIN
 from .hub import VitreaHub
+from .multiway import LinkManager
 from .vitrea_integration import supports_v95_features, validate_controller_availability
 
 PLATFORMS: list[Platform] = [
@@ -110,13 +111,29 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         raise ConfigEntryNotReady(reason)
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = hub
     _async_migrate_device_identifiers(hass, entry, hub)
+    # Multiway links (config subentries): wall keys bound to HA entities.
+    # The manager is created (but not yet started) before the platforms so
+    # the kill-switch entity can restore a paused state ahead of the links
+    # being built.
+    link_manager = LinkManager(hass, entry, hub)
+    hass.data[DOMAIN][f"{entry.entry_id}_links"] = link_manager
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    await link_manager.async_setup()
+    entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     return True
+
+
+async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Reload the entry when its data or subentries change."""
+    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
 
+    link_manager = hass.data.get(DOMAIN, {}).pop(f"{entry.entry_id}_links", None)
+    if link_manager is not None:
+        await link_manager.async_teardown()
     if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
         hub = hass.data[DOMAIN].pop(entry.entry_id)
         await hub.controller.close()

@@ -1,5 +1,6 @@
 """Vitrea Hub class."""
 
+import asyncio
 import logging
 
 from .vitrea_integration.models.thermostat import (
@@ -302,6 +303,7 @@ class VitreaHub:
             ip=host, port=port, status_update_callback=self.update_state_callback
         )
         self.supports_led_commands = supports_led_commands
+        self._offline_task: asyncio.Task | None = None
         # Device-class dispatch order matters: first class whose
         # supported_key_types contains the key type wins.
         self.supported_classes = [Light, Cover, SatelliteButton, PushButton]
@@ -391,6 +393,12 @@ class VitreaHub:
         """Test the connection to the Vitrea Hub."""
         return self.controller.connection.connected
 
+    # Short reconnects (single-socket contention, network blips) must not
+    # flip entities to unavailable: the unavailable->on/off restoration
+    # transitions can trigger user automations with plain state triggers,
+    # making the integration look like it actuates devices by itself.
+    OFFLINE_GRACE_SECONDS = 5.0
+
     async def update_state_callback(self, result):
         """Update the state of a device."""
         if result.get("type") == "node_status":
@@ -399,17 +407,37 @@ class VitreaHub:
             if device:
                 await device.update_state(result)
         elif result.get("type") == "connection":
-            self.online = result.get("status")
-            for device in self.devices.values():
-                await device.publish_updates()
-            for scene in self.scenes.values():
-                await scene.publish_updates()
-            for hvac in self.hvacs.values():
-                await hvac.publish_updates()
+            await self._handle_connection_change(bool(result.get("status")))
         elif result.get("type") == "ac_status":
             hvac = self.hvacs.get(f"N{result.get('ac_id'):03d}", None)
             if hvac:
                 await hvac.update_state(result)
+
+    async def _handle_connection_change(self, connected: bool) -> None:
+        if connected:
+            if self._offline_task and not self._offline_task.done():
+                self._offline_task.cancel()
+                self._offline_task = None
+            if not self.online:
+                self.online = True
+                await self._publish_availability()
+        elif self.online and (
+            self._offline_task is None or self._offline_task.done()
+        ):
+            self._offline_task = asyncio.create_task(self._mark_offline_after_grace())
+
+    async def _mark_offline_after_grace(self) -> None:
+        await asyncio.sleep(self.OFFLINE_GRACE_SECONDS)
+        self.online = False
+        await self._publish_availability()
+
+    async def _publish_availability(self) -> None:
+        for device in self.devices.values():
+            await device.publish_updates()
+        for scene in self.scenes.values():
+            await scene.publish_updates()
+        for hvac in self.hvacs.values():
+            await hvac.publish_updates()
 
     async def async_unload_entry(self):
         """Disconnect from the Vitrea Hub."""

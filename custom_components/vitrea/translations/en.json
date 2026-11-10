@@ -26,6 +26,167 @@
             }
         }
     },
+    "config_subentries": {
+        "satellite_link": {
+            "title": "Satellite button link",
+            "initiate_flow": {
+                "user": "Link a satellite button"
+            },
+            "entry_type": "Satellite button link",
+            "step": {
+                "user": {
+                    "title": "Link a satellite button to an entity",
+                    "data": {
+                        "satellite_id": "Satellite button",
+                        "target_entity": "Target entity (short press toggles it, LED follows it)",
+                        "long_press_scene": "Scene to activate on long press (optional)"
+                    }
+                },
+                "reconfigure": {
+                    "title": "Change the link target",
+                    "data": {
+                        "target_entity": "Target entity",
+                        "long_press_scene": "Scene to activate on long press (optional)"
+                    }
+                }
+            },
+            "abort": {
+                "hub_not_available": "The Vitrea hub is not loaded.",
+                "no_satellites": "No satellite buttons were found on this controller.",
+                "already_configured": "This satellite button is already linked."
+            }
+        },
+        "satellite_light_link": {
+            "title": "Satellite dimmer link",
+            "initiate_flow": {
+                "user": "Link a satellite button to a light (hold to dim)"
+            },
+            "entry_type": "Satellite dimmer link",
+            "step": {
+                "user": {
+                    "title": "Link a satellite button to a light",
+                    "description": "Short press toggles the light, holding the button dims it up/down, and the button LED follows the light.",
+                    "data": {
+                        "satellite_id": "Satellite button",
+                        "target_entity": "Light",
+                        "min_brightness": "Minimum brightness",
+                        "max_brightness": "Maximum brightness",
+                        "step_pct": "Brightness change per step",
+                        "step_delay": "Time between steps"
+                    }
+                },
+                "reconfigure": {
+                    "title": "Change the dimmer link",
+                    "data": {
+                        "target_entity": "Light",
+                        "min_brightness": "Minimum brightness",
+                        "max_brightness": "Maximum brightness",
+                        "step_pct": "Brightness change per step",
+                        "step_delay": "Time between steps"
+                    }
+                }
+            },
+            "error": {
+                "invalid_brightness_range": "Minimum brightness must be lower than maximum brightness."
+            },
+            "abort": {
+                "hub_not_available": "The Vitrea hub is not loaded.",
+                "no_satellites": "No satellite buttons were found on this controller.",
+                "already_configured": "This satellite button is already linked."
+            }
+        },
+        "climate_link": {
+            "title": "Climate link",
+            "initiate_flow": {
+                "user": "Link a key to a climate device"
+            },
+            "entry_type": "Climate link",
+            "step": {
+                "user": {
+                    "title": "Link a Vitrea key to a climate device",
+                    "description": "Turning the key on (or a short press on a button) brings the climate device back in its last active mode; turning it off switches the device off. Toggle keys stay in sync with the device; button LEDs show whether it is running.",
+                    "data": {
+                        "key_id": "Vitrea key (button or toggle)",
+                        "target_entity": "Climate device"
+                    }
+                },
+                "reconfigure": {
+                    "title": "Change the climate link",
+                    "data": {
+                        "target_entity": "Climate device"
+                    }
+                }
+            },
+            "abort": {
+                "hub_not_available": "The Vitrea hub is not loaded.",
+                "no_keys": "No satellite buttons or toggle keys were found on this controller.",
+                "already_configured": "This key is already linked."
+            }
+        },
+        "blind_link": {
+            "title": "Blind link",
+            "initiate_flow": {
+                "user": "Link an up/down button pair to a cover"
+            },
+            "entry_type": "Blind link",
+            "step": {
+                "user": {
+                    "title": "Link two satellite buttons to a cover",
+                    "description": "Hold a button to move the cover in its direction; while moving, holding either button stops it, and the moving direction's LED is lit. A short press tilts by the configured step when the cover supports tilt, otherwise it stops the cover.",
+                    "data": {
+                        "up_key_id": "Up button",
+                        "down_key_id": "Down button",
+                        "target_entity": "Cover",
+                        "tilt_step": "Tilt change per short press",
+                        "travel_time": "Full travel time (used for covers that don't report movement)"
+                    }
+                },
+                "reconfigure": {
+                    "title": "Change the blind link",
+                    "data": {
+                        "target_entity": "Cover",
+                        "tilt_step": "Tilt change per short press",
+                        "travel_time": "Full travel time (used for covers that don't report movement)"
+                    }
+                }
+            },
+            "error": {
+                "same_key": "The up and down buttons must be two different keys."
+            },
+            "abort": {
+                "hub_not_available": "The Vitrea hub is not loaded.",
+                "no_satellites": "At least two satellite buttons are needed on this controller.",
+                "already_configured": "One of these buttons is already linked."
+            }
+        },
+        "toggle_link": {
+            "title": "Toggle key link",
+            "initiate_flow": {
+                "user": "Link a toggle key"
+            },
+            "entry_type": "Toggle key link",
+            "step": {
+                "user": {
+                    "title": "Link a toggle key to an entity (bidirectional)",
+                    "data": {
+                        "toggle_id": "Toggle key",
+                        "target_entity": "Target entity (kept in sync with the key)"
+                    }
+                },
+                "reconfigure": {
+                    "title": "Change the link target",
+                    "data": {
+                        "target_entity": "Target entity"
+                    }
+                }
+            },
+            "abort": {
+                "hub_not_available": "The Vitrea hub is not loaded.",
+                "no_toggles": "No toggle keys were found on this controller.",
+                "already_configured": "This toggle key is already linked."
+            }
+        }
+    },
     "entity": {
         "sensor": {
             "satellite_button": {

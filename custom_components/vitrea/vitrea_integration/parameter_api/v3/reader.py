@@ -3,6 +3,7 @@ import datetime
 import logging
 from typing import Callable, Optional
 
+from ...utils.enums import CommandNumber
 from .commands.acs import GetACNumbers
 from .commands.base import BaseParameterCommandGenerator
 from .commands.floors import GetFloorNumbers
@@ -314,28 +315,48 @@ class VitreaDatabaseReader:
 
             # Process follow-up commands asynchronously as a task
             # send_command() will wait for this task to complete
-            if self._follow_up_commands:
-                async def process_follow_ups():
-                    try:
-                        await self._process_follow_up_commands()
-                    except Exception as e:
-                        _LOGGER.error("Error processing follow-up commands: %s", e)
-                        raise
-                    finally:
-                        # Clear the task reference when done
-                        self._follow_up_task = None
-                
-                self._follow_up_task = asyncio.create_task(process_follow_ups())
-            else:
-                # No follow-up commands, clear any existing task
-                self._follow_up_task = None
+            self._start_follow_up_processing()
 
         except Exception as e:
+            if len(data) > 4 and data[4] == CommandNumber.GetACParams.value:
+                # One unreadable AC record must never wedge the whole DB
+                # load: drop it from the expected count, keep the follow-up
+                # chain alive, and let every other entity come up.
+                _LOGGER.warning(
+                    "Skipping unparseable AC record (%s): %s — its climate "
+                    "entity will be missing, the rest of the DB still loads",
+                    data.hex(),
+                    e,
+                )
+                self.db.no_of_acs = max(0, self.db.no_of_acs - 1)
+                if not future_to_resolve.done():
+                    future_to_resolve.set_result([])
+                await self._sequential_callback.queue_next_ac()
+                self._start_follow_up_processing()
+                return
             _LOGGER.error(e, stack_info=True)
             # Reject promise on error
             if not future_to_resolve.done():
                 future_to_resolve.set_exception(e)
             raise
+
+    def _start_follow_up_processing(self):
+        """Run queued follow-up commands in a task send_command() awaits."""
+        if self._follow_up_commands:
+            async def process_follow_ups():
+                try:
+                    await self._process_follow_up_commands()
+                except Exception as e:
+                    _LOGGER.error("Error processing follow-up commands: %s", e)
+                    raise
+                finally:
+                    # Clear the task reference when done
+                    self._follow_up_task = None
+
+            self._follow_up_task = asyncio.create_task(process_follow_ups())
+        else:
+            # No follow-up commands, clear any existing task
+            self._follow_up_task = None
 
     async def read_vitrea_controller(
         self, force: bool = False, timeout_seconds: int = 45

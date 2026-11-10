@@ -7,6 +7,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_platform
 
 from .const import DOMAIN
+from .entity_debug import log_actuation
 from .hub import Switch
 
 
@@ -93,6 +94,7 @@ class VitreaSwitchCountdown(NumberEntity):
 
     async def async_set_native_value(self, value: int) -> None:
         """Set the countdown minutes of the switch."""
+        log_actuation(self, "number.set_value")
         if value == 0:
             await self._switch.turn_off()
             return
