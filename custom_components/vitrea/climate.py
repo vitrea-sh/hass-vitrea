@@ -1,6 +1,6 @@
 from typing import Any
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import ATTR_TEMPERATURE
+from homeassistant.const import ATTR_TEMPERATURE, UnitOfTemperature
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.components.climate import (
@@ -11,7 +11,6 @@ from homeassistant.components.climate import (
     FAN_MEDIUM,
     FAN_AUTO,
     HVACMode,
-    UnitOfTemperature,
 )
 from .const import DOMAIN
 from .entity_debug import log_actuation
@@ -200,9 +199,6 @@ class VitreaClimate(ClimateEntity):
         if hvac_mode == HVACMode.OFF:
             await self._thermostat.turn_off()
             return
-        if not self._thermostat.state:
-            await self._thermostat.turn_on()
-            await asyncio.sleep(0.05)
         if (
             self._thermostat.thermostat_type == AirConditionerType.TMSF
             and hvac_mode == HVACMode.HEAT
@@ -215,6 +211,24 @@ class VitreaClimate(ClimateEntity):
             if value == hvac_mode
         )
         mode = ThermostatModes(mode)
+        if not self._thermostat.state:
+            # Turning on and changing mode must be ONE complete command.
+            # Sending "on" followed by a partial mode change makes the
+            # controller apply the mode to its still-off state and switch
+            # the A/C back off about a second later.
+            if (
+                self._thermostat.fan_speed is not None
+                and self._thermostat.temperature_mode is not None
+                and self._thermostat.set_temperature
+            ):
+                await self._thermostat.turn_on(
+                    mode=mode, temperature=self._thermostat.set_temperature
+                )
+                return
+            # State not known yet: turn on with the controller's previous
+            # settings and give it time to settle before the mode change.
+            await self._thermostat.turn_on()
+            await asyncio.sleep(2)
         await self._thermostat.turn_on(mode=mode)
 
     async def async_set_fan_mode(self, fan_mode) -> None:

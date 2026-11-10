@@ -105,7 +105,9 @@ class VitreaLight(LightEntity):
     @property
     def brightness(self) -> int:
         """Return the brightness of the light."""
-        return percentage_to_ranged_value(BRIGHTNESS_SCALE, self._light.intensity)
+        return round(
+            percentage_to_ranged_value(BRIGHTNESS_SCALE, self._light.intensity)
+        )
 
     @property
     def supported_color_modes(self) -> Union[set[ColorMode], set[str], set[None]]:

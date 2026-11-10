@@ -24,7 +24,7 @@ class Scenario:
         self.controller = controller
         self._callbacks = set()
         if append_room_to_name:
-            self.name = f"{room_name} {scene_name}"
+            self.name = f"{room_name} {scene_name}".strip()
         else:
             self.name = scene_name
 

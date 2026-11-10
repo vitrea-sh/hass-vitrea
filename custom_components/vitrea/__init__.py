@@ -106,6 +106,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # leaks a connection plus its watchdog and background tasks.
         await hub.controller.close()
         raise ConfigEntryNotReady(str(err)) from err
+    except Exception:
+        # Any other failure would leave the entry in a failed state that
+        # Home Assistant never unloads; do not keep the host slot.
+        await hub.controller.close()
+        raise
     if not success:
         await hub.controller.close()
         raise ConfigEntryNotReady(reason)
@@ -117,8 +122,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # being built.
     link_manager = LinkManager(hass, entry, hub)
     hass.data[DOMAIN][f"{entry.entry_id}_links"] = link_manager
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    await link_manager.async_setup()
+    try:
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+        await link_manager.async_setup()
+    except Exception:
+        # A failed setup is not unloaded by Home Assistant, so release the
+        # controller's single host slot here instead of holding it forever.
+        hass.data[DOMAIN].pop(f"{entry.entry_id}_links", None)
+        hass.data[DOMAIN].pop(entry.entry_id, None)
+        await hub.controller.close()
+        raise
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     return True
 

@@ -20,7 +20,7 @@ class BaseDevice:
         self.key_name = key_name
         self.room_name = room_name
         if append_room_to_name:
-            self.name = f"{room_name} {key_name}"
+            self.name = f"{room_name} {key_name}".strip()
         else:
             self.name = key_name
         self._callbacks = set()

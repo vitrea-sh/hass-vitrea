@@ -103,7 +103,9 @@ class KeyModel(BaseVitreaModel):
             "keypad_id": self.keypad_id
         }
         if incl_relations:
-            key["room"] = self.room.serialize()
+            # A key may point at a room the controller does not list
+            # (unassigned or deleted); it still gets an entity, without a room.
+            key["room"] = self.room.serialize() if self.room else {}
         else:
             key["room_id"] = self.room_id
         return key
@@ -129,7 +131,7 @@ class AirConditionerModel(BaseVitreaModel):
             }
         }
         if incl_relations:
-            result["room"] = self.room.serialize()
+            result["room"] = self.room.serialize() if self.room else {}
         else:
             result["room_id"] = self.room_id
         return result
