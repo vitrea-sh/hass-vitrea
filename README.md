@@ -4,13 +4,17 @@
 
 Vitrea integration for Home Assistant. Provides local control of Vitrea devices via the Vitrea controller.
 
-- Entities: lights, covers/blinds, fans, thermostats, scenarios, binary sensors, sensors, switches
+- Entities: lights, covers/blinds, thermostats, scenarios, switches, binary sensors, sensors, numbers, satellite button events
 - IO class: local_push
 - Supports UI config flow
 
 ## Requirements
 - Home Assistant 2025.3 or newer
-- Network access from Home Assistant to the Vitrea controller
+- Network access from Home Assistant to the Vitrea controller (TCP port 11502 by default)
+- Controller firmware: vBox Pro 7.99 or newer, VMax 8.63 or newer (9.x and 10.x are supported). LED indicators and Room-On keys need 9.5 or newer. Contact Vitrea support if your controller needs a firmware upgrade.
+
+### One control system at a time
+The controller accepts **a single control-system connection**. If another system is connected to it — Control4, a HomeKit or Matter bridge, another Home Assistant instance — this integration fails with a connection error, or the two keep disconnecting each other. Disconnect the other system before adding the integration.
 
 ## Multiway links
 Bind physical Vitrea keys to any Home Assistant entity from the
