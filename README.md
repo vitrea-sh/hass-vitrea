@@ -62,6 +62,9 @@ resuming never actuates anything by itself.
 2. Copy the `custom_components/vitrea` directory to your Home Assistant config: `<config>/custom_components/vitrea`
 3. Restart Home Assistant
 
+### Other Vitrea integrations
+This is the official integration from Vitrea and installs into `custom_components/vitrea`. Any other custom integration that uses the same `vitrea` folder cannot be installed at the same time; remove it (and restart Home Assistant) before installing this one.
+
 ## Configuration
 1. Go to Settings → Devices & Services → Add Integration
 2. Search for "Vitrea"
