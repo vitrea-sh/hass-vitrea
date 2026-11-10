@@ -291,6 +291,33 @@ async def test_resume_rebuilds_working_links():
     await _drain(hass)
 
 
+async def test_resume_never_schedules_alignment():
+    """A key that drifted while paused must not be switched on resume.
+
+    At boot a toggle link aligns the key to its entity once warm-up has
+    passed. Resuming from the kill-switch must not: the wall key may
+    drive a real load, and nobody touched anything.
+    """
+    hass, hub, satellite, toggle, manager = _build()
+    await manager.async_setup()
+    boot_link = manager.links["t1"]
+    assert boot_link._align_task is not None  # boot does schedule it
+
+    await manager.async_set_enabled(False)
+    toggle.is_on = True  # wall key pressed while links were paused
+    await manager.async_set_enabled(True)
+    await _drain(hass)
+
+    resumed_link = manager.links["t1"]
+    assert resumed_link._align_task is None
+    assert toggle.is_on is True  # untouched
+    assert hass.services.calls == []
+    # Only the resume skips alignment; a later reconnect resync aligns again.
+    assert resumed_link.align_after_setup is True
+    await manager.async_teardown()
+    await _drain(hass)
+
+
 async def test_restore_paused_skips_link_build():
     """Kill-switch restored 'off' before setup: links must not be built."""
     hass, hub, satellite, toggle, manager = _build()

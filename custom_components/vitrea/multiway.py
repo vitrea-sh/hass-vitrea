@@ -651,6 +651,8 @@ class ToggleLink(_BaseLink):
         self.core = ToggleLinkCore()
         self._logged_trips = 0
         self._align_task: asyncio.Task | None = None
+        # False only for a kill-switch resume: skip the one-shot alignment.
+        self.align_after_setup = True
 
     def _entity_is_on(self, state: str | None) -> bool | None:
         """Interpret the master's state as on/off for the core."""
@@ -771,6 +773,12 @@ class ToggleLink(_BaseLink):
         self.core.seed(bool(self.toggle.is_on), self._entity_is_on(state_str))
         if self._align_task and not self._align_task.done():
             self._align_task.cancel()
+        if not self.align_after_setup:
+            # Resumed by the kill-switch: record only. A key that drifted
+            # while the links were paused stays as it is until the next
+            # press or entity change; resuming never switches a load.
+            self.align_after_setup = True
+            return
         self._align_task = self.hass.async_create_task(self._align_after_warmup())
 
     async def _align_after_warmup(self) -> None:
@@ -833,7 +841,8 @@ class LinkManager:
     no subscriptions, no key callbacks, no LED writes — so a paused
     integration cannot actuate anything no matter what arrives on the
     wire. Resuming rebuilds the links through the normal setup path,
-    which seeds record-only and re-enters warm-up, so the act of
+    which seeds record-only and re-enters warm-up, and skips the
+    post-warm-up alignment toggle links do at boot, so the act of
     resuming never actuates by itself.
     """
 
@@ -846,7 +855,9 @@ class LinkManager:
         self._toggle_lock = asyncio.Lock()
         self._resync_task: asyncio.Task | None = None
 
-    async def async_setup(self) -> None:
+    async def async_setup(self, align: bool = True) -> None:
+        """Build the links. With align=False (kill-switch resume) toggle
+        links skip their one-shot post-warm-up alignment."""
         if not self.enabled:
             _LOGGER.info("Multiway: links paused by the kill-switch; not building")
             return
@@ -865,6 +876,8 @@ class LinkManager:
                 link = ToggleLink(self.hass, self.hub, subentry)
             else:
                 continue
+            if not align and hasattr(link, "align_after_setup"):
+                link.align_after_setup = False
             await link.async_setup()
             self.links[subentry.subentry_id] = link
         if self.links:
@@ -909,7 +922,7 @@ class LinkManager:
             self.enabled = enabled
             if enabled:
                 _LOGGER.info("Multiway kill-switch: resuming links")
-                await self.async_setup()
+                await self.async_setup(align=False)
             else:
                 _LOGGER.info("Multiway kill-switch: pausing all links")
                 await self._async_teardown_links()

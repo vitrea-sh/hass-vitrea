@@ -192,7 +192,15 @@ class VitreaDatabaseReader:
                     # Follow-up commands failed, but original command succeeded
             return result
         except (asyncio.TimeoutError, asyncio.CancelledError) as e:
-            _LOGGER.error("Timeout or cancellation waiting for response: %s", e)
+            # Retried below; the caller reports a final failure. Firmware
+            # 9.5x regularly drops the first request after a connect.
+            _LOGGER.debug(
+                "No response to %s (attempt %s of %s): %r",
+                command_generator.command_number,
+                current_attempt + 1,
+                max_attempts,
+                e,
+            )
             # Clear pending request if it timed out or was cancelled
             async with self.request_lock:
                 if self.pending_request is future:

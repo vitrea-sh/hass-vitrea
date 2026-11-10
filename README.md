@@ -14,7 +14,7 @@ Vitrea integration for Home Assistant. Provides local control of Vitrea devices 
 - Controller firmware: vBox Pro 7.99 or newer, VMax 8.63 or newer (9.x and 10.x are supported). LED indicators and Room-On keys need 9.5 or newer. Contact Vitrea support if your controller needs a firmware upgrade.
 
 ### One control system at a time
-The controller accepts **a single control-system connection**. If another system is connected to it — Control4, a HomeKit or Matter bridge, another Home Assistant instance — this integration fails with a connection error, or the two keep disconnecting each other. Disconnect the other system before adding the integration.
+The controller accepts **a single control-system connection**, first come, first served. If another system is already connected to it — Control4, a HomeKit or Matter bridge, another Home Assistant instance — this integration gets a connection error until that system is disconnected from the controller.
 
 ## Multiway links
 Bind physical Vitrea keys to any Home Assistant entity from the
@@ -46,8 +46,9 @@ When any link is configured, a **Multiway Links** kill-switch entity
 appears (on the "Vitrea Multiway" service device). Turning it off
 instantly pauses every link — no key press, LED write, or service call
 can leak through while paused — and the state survives restarts.
-Turning it back on rebuilds the links through their normal warm-up, so
-resuming never actuates anything by itself.
+Turning it back on rebuilds the links without switching anything: a key
+that was changed while the links were paused stays as it is until the
+next press or entity change.
 
 ## Installation
 

@@ -38,6 +38,7 @@ class VitreaSatelliteEvent(EventEntity):
     def __init__(self, satellite: SatelliteButton):
         """Initialize the event entity."""
         self._satellite = satellite
+        self._baseline_generation: int | None = None
         self._attr_name = f"{satellite.name} Button"
         self._attr_unique_id = (
             f"{satellite.hub.hub_id}-{satellite.node_id}-{satellite.key_id}-event"
@@ -71,5 +72,13 @@ class VitreaSatelliteEvent(EventEntity):
     @callback
     def _handle_button_event(self, event_type: str) -> None:
         """Dispatch a button press as an HA event."""
+        generation = self._satellite.hub.connection_generation
+        if generation != self._baseline_generation:
+            # First report since a (re)connect. The status poll reports
+            # every satellite key as "Release"; that is the key's resting
+            # state, not a press, and must not fire on every restart.
+            self._baseline_generation = generation
+            if event_type == "Release":
+                return
         self._trigger_event(event_type)
         self.schedule_update_ha_state()

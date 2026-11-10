@@ -269,7 +269,10 @@ class VBoxConnection:
                 self.last_rx = datetime.now()
                 return True
             except (ConnectionError, TimeoutError) as exc:
-                _LOGGER.error(
+                # The caller reports the outcome once (setup error or the
+                # reconnect loop's single warning); per-attempt detail would
+                # flood the log during an outage.
+                _LOGGER.debug(
                     "Connection attempt %s to VBox at %s:%s failed: %s",
                     attempt,
                     self.ip,

@@ -304,6 +304,9 @@ class VitreaHub:
         )
         self.supports_led_commands = supports_led_commands
         self._offline_task: asyncio.Task | None = None
+        # Bumped on every (re)connect; consumers use it to recognise the
+        # status poll that follows a connect as a baseline, not a press.
+        self.connection_generation = 0
         # Device-class dispatch order matters: first class whose
         # supported_key_types contains the key type wins.
         self.supported_classes = [Light, Cover, SatelliteButton, PushButton]
@@ -415,6 +418,7 @@ class VitreaHub:
 
     async def _handle_connection_change(self, connected: bool) -> None:
         if connected:
+            self.connection_generation += 1
             if self._offline_task and not self._offline_task.done():
                 self._offline_task.cancel()
                 self._offline_task = None
