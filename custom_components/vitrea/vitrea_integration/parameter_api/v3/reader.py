@@ -12,13 +12,7 @@ from .commands.scenarios import GetScenarioNumbers
 from .responses.parser import DBResponseParserFactory
 
 from ...models.database import (
-    AirConditionerModel,
     BaseVitreaModel,
-    FloorModel,
-    KeyModel,
-    KeypadModel,
-    RoomModel,
-    ScenarioModel,
     VitreaDatabaseModel,
 )
 
@@ -133,6 +127,7 @@ class VitreaDatabaseReader:
         self.writer = write
         self.db = VitreaDatabaseModel()
         self.pending_request: Optional[asyncio.Future] = None
+        self._pending_command_number: Optional[int] = None
         self.request_lock = asyncio.Lock()
         self._follow_up_commands = []
         self._follow_up_task: Optional[asyncio.Task] = None
@@ -161,7 +156,6 @@ class VitreaDatabaseReader:
         Raises:
             TimeoutError: If response not received within timeout period
         """
-        _LOGGER.debug("send_command() called for: %s", command_generator.command_number)
         if current_attempt >= max_attempts:
             raise TimeoutError(f"Max attempts reached for command {command_generator.command_number}")
         async with self.request_lock:
@@ -175,18 +169,17 @@ class VitreaDatabaseReader:
 
             # Create new promise for this request
             self.pending_request = asyncio.Future()
+            self._pending_command_number = command_generator.command_number.value
             command = await command_generator.serialize()
-            _LOGGER.debug("Sending command: %s", command.hex())
             await self.writer(command)
 
             # Store reference to the Future before releasing lock
             future = self.pending_request
 
         # Wait for response outside the lock (will be resolved by feed())
-        _LOGGER.debug("Waiting for response with timeout: %s", timeout)
         try:
             result = await asyncio.wait_for(future, timeout=timeout)
-            _LOGGER.debug("Received response result: %s", result)
+            _LOGGER.debug("Response for %s: %s", command_generator.command_number, result)
             # Wait for any follow-up commands to complete before returning
             # This ensures all follow-ups (including nested ones) are done
             if self._follow_up_task and not self._follow_up_task.done():
@@ -250,18 +243,28 @@ class VitreaDatabaseReader:
         Args:
             data: Raw response bytes from controller
         """
-        _LOGGER.debug("feed() called with data: %s", data.hex()[:50])
         # Resolve pending promise if it exists
         future_to_resolve = None
         async with self.request_lock:
             if self.pending_request and not self.pending_request.done():
+                # Frame layout: VTH< C#(1) len(2) ... — only resolve the
+                # pending future with a response for the SAME command number,
+                # otherwise a late reply from a timed-out attempt can hand
+                # the wrong data to the current request.
+                if (
+                    self._pending_command_number is not None
+                    and len(data) > 4
+                    and data[4] != self._pending_command_number
+                ):
+                    _LOGGER.warning(
+                        "Ignoring parameter response for command %s while "
+                        "waiting for command %s",
+                        data[4],
+                        self._pending_command_number,
+                    )
+                    return
                 future_to_resolve = self.pending_request
                 self.pending_request = None  # Clear before resolving to prevent race
-                _LOGGER.debug("Found pending request to resolve")
-            else:
-                _LOGGER.debug("No pending request found (pending_request: %s, done: %s)", 
-                             self.pending_request, 
-                             self.pending_request.done() if self.pending_request else None)
 
         if future_to_resolve is None:
             # No pending request, this might be an unsolicited response
@@ -277,9 +280,7 @@ class VitreaDatabaseReader:
                 if not future_to_resolve.done():
                     future_to_resolve.set_exception(ValueError("No parser found for response"))
                 return
-            _LOGGER.debug("Created parser: %s", parser.__class__.__name__)
             items = await parser.parse_response()
-            _LOGGER.debug("Parser returned items: %s", type(items))
 
             # Update database
             if isinstance(items, list):

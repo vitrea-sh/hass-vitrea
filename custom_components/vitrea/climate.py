@@ -1,5 +1,4 @@
 from typing import Any
-from homeassistant.components.climate.const import ATTR_FAN_MODE, ATTR_HVAC_MODE
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import ATTR_TEMPERATURE
 from homeassistant.core import HomeAssistant
@@ -174,6 +173,10 @@ class VitreaClimate(ClimateEntity):
         # The call back registration is done once this entity is registered with HA
         # (rather than in the __init__)
         self._thermostat.register_callback(self.schedule_update_ha_state)
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Entity being removed from hass."""
+        self._thermostat.remove_callback(self.schedule_update_ha_state)
 
     async def async_turn_on(self) -> None:
         """Turn the entity on."""

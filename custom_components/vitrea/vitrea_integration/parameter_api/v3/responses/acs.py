@@ -1,6 +1,5 @@
 from ....utils.enums import CommandNumber, AirConditionerType
 from .base import BaseParameterResponseParser
-from ..commands.acs import GetACParams
 from ....models.database import AirConditionerModel
 
 class ACNumbersParser(BaseParameterResponseParser):

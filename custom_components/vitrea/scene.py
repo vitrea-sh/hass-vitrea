@@ -4,7 +4,6 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_platform
 from .const import DOMAIN
 from .hub import Scene as HubScene
-import voluptuous as vol
 
 
 async def async_setup_entry(
@@ -47,6 +46,10 @@ class VitreaScene(Scene):
         # needs to notify HA of changes. The dummy device has a registercallback
         # method that will be called when the device is updated.
         self._scene.register_callback(self.schedule_update_ha_state)
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Entity being removed from hass."""
+        self._scene.remove_callback(self.schedule_update_ha_state)
 
     async def async_activate(self, **kwargs):
         """Turn the scene on."""

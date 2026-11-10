@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import logging
 import threading
+import time
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
 from typing import Any
@@ -30,20 +31,39 @@ def _create_task(awaitable: Awaitable[Any], *, name: str) -> asyncio.Task:
 class VBoxConnection:
     """Manage the socket connection to a Vitrea VBox controller."""
 
+    # Parameter API frames are small (names, id lists); anything larger means
+    # the stream is desynced and the connection must be reset.
+    MAX_FRAME_LENGTH = 4096
+
     def __init__(
         self,
         ip: str,
         port: int,
         response_callback: Callable,
         connection_callback: Callable | None = None,
-        event_beat_seconds: int = 0.2,
+        event_beat_seconds: float = 0.2,
         enabled=True,
+        keep_alive_interval: float = 20.0,
+        rx_timeout: float = 45.0,
+        reconnect_base_delay: float = 1.0,
+        reconnect_max_delay: float = 30.0,
+        connect_retry_delay: float = 1.0,
+        command_ack_timeout: float = 1.0,
+        max_command_age: float = 10.0,
     ) -> None:
         self.ip = ip
         self.port = port
+        self.keep_alive_interval = keep_alive_interval
+        self.rx_timeout = rx_timeout
+        self.reconnect_base_delay = reconnect_base_delay
+        self.reconnect_max_delay = reconnect_max_delay
+        self.connect_retry_delay = connect_retry_delay
+        self.command_ack_timeout = command_ack_timeout
+        self.max_command_age = max_command_age
         self.reader = None
         self.writer = None
-        self.command_queue: asyncio.Queue[bytes] = asyncio.Queue()
+        self.command_queue: asyncio.Queue[tuple[float, bytes]] = asyncio.Queue()
+        self._ack_event = asyncio.Event()
         self.event_beat_seconds = event_beat_seconds
         self._connected = False
         self._last_keep_alive = None
@@ -108,14 +128,6 @@ class VBoxConnection:
         if self.connection_callback:
             await self.connection_callback(value)
 
-    def _response_task_callback(self, task: asyncio.Task):
-        try:
-            task.result()
-            self.response_tasks.remove(task)
-        except Exception as e:
-            task_stack = task.get_stack()
-            _LOGGER.warning(e, stack_info=task_stack, exc_info=True)
-
     async def connect(self, reconnect=False):
         """Ensure a single active connection to the VBox controller."""
 
@@ -137,8 +149,6 @@ class VBoxConnection:
 
         async with self._reconnect_lock:
             self.reconnecting = False
-
-        await self._update_connection_state(self.connected)
         return True
 
     async def request_reconnect(self) -> None:
@@ -152,7 +162,12 @@ class VBoxConnection:
             self._tasks.add(reconnect_task)
 
     async def reconnect(self):
-        """Reconnect to the VBox with exponential backoff; single-flight guarded."""
+        """Reconnect to the VBox with capped exponential backoff.
+
+        Single-flight guarded; retries until it succeeds or the connection is
+        disabled, so a long controller/network outage never leaves the
+        connection permanently dead.
+        """
         async with self._reconnect_lock:
             if not self.enabled:
                 self.reconnecting = False
@@ -163,50 +178,57 @@ class VBoxConnection:
         await self.close(disable=False)
 
         attempts = 0
-        max_attempts = 10
-        base_delay = 1.0
-
-        while attempts < max_attempts:
-            attempts += 1
-            delay = min(30, base_delay * (2 ** (attempts - 1)))
-
-            try:
-                if not self.enabled:
-                    break
-
-                _LOGGER.debug(
-                    "Reconnection attempt #%s to VBox after %ss delay", attempts, delay
+        try:
+            while self.enabled:
+                attempts += 1
+                delay = min(
+                    self.reconnect_max_delay,
+                    self.reconnect_base_delay * (2 ** min(attempts - 1, 10)),
                 )
-                success = await self.connect(reconnect=True)
 
-                if success:
-                    _LOGGER.info(
-                        "Successfully reconnected to VBox - attempt #%s", attempts
+                try:
+                    _LOGGER.debug(
+                        "Reconnection attempt #%s to VBox after %ss delay",
+                        attempts,
+                        delay,
                     )
-                    return True
+                    if await self.connect(reconnect=True):
+                        _LOGGER.info(
+                            "Successfully reconnected to VBox - attempt #%s", attempts
+                        )
+                        return True
+                except Exception as e:  # noqa: BLE001
+                    # Warn once, then go quiet: reconnection may run for hours
+                    # during an outage and must not flood the log.
+                    _LOGGER.log(
+                        logging.WARNING if attempts == 1 else logging.DEBUG,
+                        "Reconnection attempt #%s failed: %s",
+                        attempts,
+                        e,
+                    )
 
-            except Exception as e:  # noqa: BLE001
-                _LOGGER.error("Reconnection attempt #%s failed: %s", attempts, e)
-
-            await self._teardown_connection(disable=False)
-            await self._update_connection_state(False)
-            await asyncio.sleep(delay)
-
-        _LOGGER.error("Failed to reconnect after %s attempts, giving up", max_attempts)
-        async with self._reconnect_lock:
-            self.reconnecting = False
+                await self._teardown_connection(disable=False)
+                await asyncio.sleep(delay)
+        finally:
+            async with self._reconnect_lock:
+                if not self.connected:
+                    self.reconnecting = False
         return False
 
     async def send(self, command: bytes):
-        """Add a command to the queue to be sent to the VBox. If the connection is lost, reconnect."""
-        if not self.connected or not self.writer:
-            await self.set_connected(False)
-            self.error_reason = "Send Failed"
-            await self.request_reconnect()
-            return False
+        """Queue a command for the VBox.
+
+        Commands are queued even while disconnected (and a reconnect is
+        requested), so a user action during a short blip is delivered once
+        the link is back instead of silently vanishing. The writer drops
+        commands older than max_command_age.
+        """
         if not isinstance(command, bytes):
             raise TypeError("Command must be bytes, received str:", command)
-        await self.command_queue.put(command)
+        await self.command_queue.put((time.monotonic(), command))
+        if not self.connected or not self.writer:
+            self.error_reason = "Send Failed"
+            await self.request_reconnect()
         return True
 
     async def receive(self):
@@ -241,6 +263,10 @@ class VBoxConnection:
                 _LOGGER.info("Connected to VBox")
                 await self.set_connected(True)
                 self.last_keep_alive = None
+                # Arm the receive-staleness watchdog from the moment the
+                # socket opens, so a connection that never receives anything
+                # (half-open socket) still times out instead of going zombie.
+                self.last_rx = datetime.now()
                 return True
             except (ConnectionError, TimeoutError) as exc:
                 _LOGGER.error(
@@ -252,7 +278,7 @@ class VBoxConnection:
                 )
                 self.error_reason = "Connection Failed"
                 await self.set_connected(False)
-                await asyncio.sleep(1)
+                await asyncio.sleep(self.connect_retry_delay)
 
         raise ConnectionError(f"Failed to connect to VBox at {self.ip}:{self.port}")
 
@@ -295,14 +321,17 @@ class VBoxConnection:
                 )
                 self._tasks.add(self._monitor_task)
 
-    def _tasks_running(self) -> bool:
-        return any(task for task in self._tasks if not task.done())
-
     async def _reader_loop(self) -> None:
         """Continuously read messages from the controller."""
 
         while self.enabled and not self._stop_event.is_set():
-            response = await self._receive()
+            try:
+                response = await self._receive()
+            except Exception as err:  # noqa: BLE001 - any read failure resets the link
+                _LOGGER.warning("Reader failed, resetting connection: %s", err)
+                self.error_reason = "Receive Failed"
+                await self._handle_connection_failure()
+                return
             if not response:
                 if not self.connected:
                     await self._handle_connection_failure()
@@ -314,10 +343,14 @@ class VBoxConnection:
             if response.startswith((b"VTH>", b"H:")):
                 _LOGGER.debug("Dropping echo frame: %s", response)
                 continue
+            # Any complete frame from the vBox unblocks the writer's pacing
+            # wait (spec: send next only after an answer). Deliberately
+            # broad: a single-key status request is answered with the status
+            # frame itself and no OK, and any inbound traffic proves the
+            # controller is alive and processing.
+            self._ack_event.set()
 
-            _LOGGER.debug(
-                "Received response from VBox: %s (hex: %s)", response, response.hex()
-            )
+            _LOGGER.debug("RX %s", response)
             try:
                 await self.response_callback(response)
             except Exception as err:  # noqa: BLE001
@@ -330,82 +363,119 @@ class VBoxConnection:
 
         while self.enabled and not self._stop_event.is_set():
             try:
-                command = await asyncio.wait_for(
+                queued_at, command = await asyncio.wait_for(
                     self.command_queue.get(), timeout=self.event_beat_seconds
                 )
             except asyncio.TimeoutError:
-                command = None
-
-            if not command:
                 continue
-            await self._send(command)
-            continue 
+
+            age = time.monotonic() - queued_at
+            if age > self.max_command_age:
+                _LOGGER.warning(
+                    "Dropping command queued %.1fs ago (max %.1fs): %s",
+                    age,
+                    self.max_command_age,
+                    command,
+                )
+                continue
+            self._ack_event.clear()
+            try:
+                await self._send(command)
+            except (ConnectionError, OSError) as exc:
+                _LOGGER.warning("Failed to send command, resetting connection: %s", exc)
+                self.error_reason = "Send Failed"
+                await self._handle_connection_failure()
+                return
+            # Spec recommendation: send the next command only after the vBox
+            # answered the previous one. Cap the wait so a missing ack can
+            # never stall the queue.
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(
+                    self._ack_event.wait(), timeout=self.command_ack_timeout
+                )
 
         _LOGGER.debug("Writer loop finished")
 
     async def _monitor_loop(self) -> None:
         """Monitor connection state and trigger keep-alives/timeouts."""
 
+        poll = max(self.event_beat_seconds, min(0.5, self.rx_timeout / 5))
         while self.enabled and not self._stop_event.is_set():
             now = datetime.now()
             if (
                 self.last_keep_alive_sent is None
-                or (now - self.last_keep_alive_sent) > timedelta(seconds=20)
+                or (now - self.last_keep_alive_sent)
+                > timedelta(seconds=self.keep_alive_interval)
             ):
                 try:
                     await self._send_keep_alive()
-                except ConnectionError as exc:
+                except (ConnectionError, OSError) as exc:
                     _LOGGER.error("Failed to send keep alive: %s", exc)
                     self.error_reason = "Keep Alive Send Failed"
                     await self._handle_connection_failure()
                     return
 
-            if self.last_rx and (now - self.last_rx) > timedelta(seconds=45):
+            if self.last_rx and (now - self.last_rx) > timedelta(
+                seconds=self.rx_timeout
+            ):
                 _LOGGER.error(
-                    "No keep alive response received for more than 45 seconds"
+                    "No data received for more than %s seconds", self.rx_timeout
                 )
                 self.error_reason = "Keep Alive Timeout"
                 await self._handle_connection_failure()
                 return
 
-            await asyncio.sleep(max(self.event_beat_seconds, 0.5))
+            await asyncio.sleep(poll)
 
         _LOGGER.debug("Monitor loop finished")
 
     async def _send(self, command: bytes) -> bool:
         """Send a command to the VBox."""
-        _LOGGER.debug(("sending(ascii):", command))
-        _LOGGER.debug(("sending(hex):", command.hex()))
         if not self.writer:
             raise ConnectionError("Connection is not available")
+        _LOGGER.debug("TX %s", command)
         self.writer.write(command)
         await self.writer.drain()
         self.last_tx = datetime.now()
-        _LOGGER.debug("Command sent to VBox")
         return True
 
     async def _receive(self):
-        """Receive a response from the VBox."""
+        """Receive a single framed response from the VBox.
+
+        Uses exact reads so TCP fragmentation cannot desync the stream.
+        Returns None when the connection is no longer usable; the reader
+        loop turns that into a reconnect.
+        """
         if not self.reader or not self.writer:
             await self.set_connected(False)
             self.error_reason = "Connection Lost"
             return None
-        prefix = await self.reader.read(2)
-        # prefix should be b'VT' and we should remove the newline before combining with data.
-        if prefix != b"VT":
-            result = await self.reader.readuntil(b"\r\n")
-            result = prefix + result
-        else:
-            info = await self.reader.read(5)
-            # len is 2 bytes at the end of the info
-            length = int(info[-2:].hex()[1:], 16)
-            result = await self.reader.read(length)
-            result = prefix + info + result
-        if not result:
+        try:
+            prefix = await self.reader.readexactly(2)
+            if prefix != b"VT":
+                # ASCII message, terminated by CR LF.
+                result = prefix + await self.reader.readuntil(b"\r\n")
+            else:
+                # Binary parameter API frame: VTH< C# len(2 bytes, Hi-Lo) payload.
+                info = await self.reader.readexactly(5)
+                length = int.from_bytes(info[-2:], "big")
+                if length > self.MAX_FRAME_LENGTH:
+                    raise ValueError(f"Frame length {length} exceeds maximum")
+                result = prefix + info + await self.reader.readexactly(length)
+        except asyncio.IncompleteReadError:
             self.error_reason = "Connection Closed By Controller"
             await self.set_connected(False)
-        if result:
-            _LOGGER.debug(("RECEIVED: ", result.hex()))
+            return None
+        except (ConnectionError, OSError) as exc:
+            _LOGGER.warning("Receive failed: %s", exc)
+            self.error_reason = "Connection Lost"
+            await self.set_connected(False)
+            return None
+        except (asyncio.LimitOverrunError, ValueError) as exc:
+            _LOGGER.warning("Framing error, resetting connection: %s", exc)
+            self.error_reason = "Framing Error"
+            await self.set_connected(False)
+            return None
         return result
 
     async def __aexit__(self, exc_type, exc, tb):
@@ -419,7 +489,6 @@ class VBoxConnection:
         self._stop_event.set()
         await self.set_connected(False)
         await self._close_writer()
-        await self._update_connection_state(False)
         await self.request_reconnect()
 
     async def _teardown_connection(self, *, disable: bool) -> None:
@@ -427,32 +496,34 @@ class VBoxConnection:
 
         if disable:
             self.enabled = False
+            # Deliberate shutdown: don't report it as "Unknown Error".
+            self.error_reason = "Connection Closed"
 
         self._stop_event.set()
+        current = asyncio.current_task()
+        # Snapshot and cancel under the lock, but never await while holding
+        # it: _ensure_background_tasks takes the same blocking lock, so an
+        # await here could freeze the entire event loop.
         with self._task_lock:
-            current = asyncio.current_task()
-            for task in list(self._tasks):
-                if task is current:
-                    continue
+            tasks = [task for task in self._tasks if task is not current]
+            for task in tasks:
                 task.cancel()
-            for task in list(self._tasks):
-                if task is current:
-                    continue
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task
             self._tasks.clear()
             self._reader_task = None
             self._writer_task = None
             self._monitor_task = None
+        for task in tasks:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
         await self._close_writer()
 
         await self.set_connected(False)
-        await self._update_connection_state(False)
 
     async def _close_writer(self) -> None:
         """Close the current writer if one exists."""
 
+        had_writer = self.writer is not None
         try:
             if self.writer:
                 self.writer.close()
@@ -462,14 +533,17 @@ class VBoxConnection:
         finally:
             self.reader = None
             self.writer = None
-            _LOGGER.info("Disconnected from VBox")
+            if had_writer:
+                _LOGGER.info("Disconnected from VBox")
 
     def is_healthy(self) -> bool:
         """Return True when the active connection and tasks look healthy."""
 
         if not self.connected:
             return False
-        if self.last_rx and datetime.now() - self.last_rx > timedelta(seconds=45):
+        if self.last_rx and datetime.now() - self.last_rx > timedelta(
+            seconds=self.rx_timeout
+        ):
             return False
         for task in (self._reader_task, self._writer_task, self._monitor_task):
             if task and task.done():

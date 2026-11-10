@@ -61,16 +61,6 @@ class VitreaCover(CoverEntity):
         return self._cover.hub.online
 
     @property
-    def device_info(self):
-        """Information about this entity/device."""
-        return {
-            "identifiers": {(DOMAIN, self._cover._id)},
-            # If desired, the name for the device could be different to the entity
-            "name": self._attr_name,
-            "manufacturer": self._cover.hub.manufacturer,
-        }
-
-    @property
     def current_cover_position(self):
         return self._cover.current_cover_position
 

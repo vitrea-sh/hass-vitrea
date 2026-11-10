@@ -5,12 +5,10 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import (
     entity_platform,
-    service,
-    device_registry,
     config_validation as cv,
 )
 
-from .const import DOMAIN, VitreaFeatures
+from .const import DOMAIN
 from .hub import SatelliteButton, Switch, PushButton
 import voluptuous as vol
 
@@ -42,7 +40,6 @@ async def async_setup_entry(
     platform.async_register_entity_service(
         "turn_on_with_timer",
         {
-            vol.Required("entity_id"): cv.entity_id,
             vol.Required("minutes", default=0): cv.positive_int,
         },
         "async_turn_on_with_timer",
@@ -53,7 +50,7 @@ class VitreaSwitch(SwitchEntity):
     """Representation of a Vitrea Switch for Home Assistant."""
 
     _attr_should_poll = False
-    _attr_supported_features = [VitreaFeatures.TIMER_ON]
+    _attr_icon = "mdi:light-switch"
 
     def __init__(self, switch: Switch):
         """Initialize the switch."""
@@ -64,7 +61,6 @@ class VitreaSwitch(SwitchEntity):
             "identifiers": {(DOMAIN, self._attr_unique_id)},
             "name": switch.name,
             "manufacturer": "Vitrea",
-            "icon": "mdi:light-switch",
             "model": "Vitrea Toggle",
         }
 
@@ -89,16 +85,6 @@ class VitreaSwitch(SwitchEntity):
         return True
 
     @property
-    def device_info(self):
-        """Information about this entity/device."""
-        return {
-            "identifiers": {(DOMAIN, self._switch._id)},
-            # If desired, the name for the device could be different to the entity
-            "name": self._attr_name,
-            "manufacturer": self._switch.hub.manufacturer,
-        }
-
-    @property
     def available(self) -> bool:
         """Return True if switch and hub is available."""
         return self._switch.hub.online
@@ -120,18 +106,30 @@ class VitreaSwitch(SwitchEntity):
 
 
 class VitreaSatelliteIndicatorLed(SwitchEntity):
-    """Representation of a Vitrea Satellite Indicator Led."""
+    """Representation of a Vitrea Satellite Indicator Led.
+
+    The vBox only acknowledges the L command — it never pushes LED state,
+    so the entity state is assumed from the last command we sent.
+    """
 
     _attr_should_poll = False
-    _attr_supported_features = []
+    _attr_assumed_state = True
 
     def __init__(self, switch: SatelliteButton):
         """Initialize the switch."""
         self._switch = switch
-        self._attr_name = switch.name
+        self._attr_name = f"{switch.name} Indicator"
         self._attr_unique_id = (
             f"{switch.hub.hub_id}-{switch.node_id}-{switch.key_id}-indicator-led"
         )
+        # Attach to the same device as the satellite sensor entity.
+        self._attr_device_info = {
+            "identifiers": {
+                (DOMAIN, f"{switch.hub.hub_id}-{switch.node_id}-{switch.key_id}")
+            },
+            "name": switch.name,
+            "manufacturer": "Vitrea",
+        }
 
     async def async_added_to_hass(self) -> None:
         """Run when this Entity has been added to HA."""
@@ -163,18 +161,30 @@ class VitreaSatelliteIndicatorLed(SwitchEntity):
 
 
 class VitreaPushButtonIndicatorLed(SwitchEntity):
-    """Representation of a Vitrea Satellite Indicator Led."""
+    """Representation of a Vitrea Push Button Indicator Led.
+
+    Assumed state: the vBox acknowledges the L command but never pushes
+    LED state updates.
+    """
 
     _attr_should_poll = False
-    _attr_supported_features = []
+    _attr_assumed_state = True
 
     def __init__(self, switch: PushButton):
         """Initialize the switch."""
         self._switch = switch
-        self._attr_name = switch.name
+        self._attr_name = f"{switch.name} Indicator"
         self._attr_unique_id = (
             f"{switch.hub.hub_id}-{switch.node_id}-{switch.key_id}-indicator-led"
         )
+        # Attach to the same device as the push-button binary sensor.
+        self._attr_device_info = {
+            "identifiers": {
+                (DOMAIN, f"{switch.hub.hub_id}-{switch.node_id}-{switch.key_id}")
+            },
+            "name": switch.name,
+            "manufacturer": "Vitrea",
+        }
 
     async def async_added_to_hass(self) -> None:
         """Run when this Entity has been added to HA."""

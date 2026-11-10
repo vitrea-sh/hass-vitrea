@@ -2,11 +2,9 @@ from datetime import datetime
 from homeassistant.components.sensor import (
     SensorEntity,
     SensorDeviceClass,
-    SensorStateClass,
 )
-from homeassistant.const import StrEnum
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .const import DOMAIN
 from .hub import SatelliteButton
@@ -32,6 +30,7 @@ async def async_setup_entry(
 class SatelliteSensor(SensorEntity):
     _attr_device_class = SensorDeviceClass.ENUM
     _attr_options = ["Short", "Long", "Release"]
+    _attr_translation_key = "satellite_button"
     _attr_last_reset: datetime | None = None
     _attr_icon = "mdi:gesture-double-tap"
 

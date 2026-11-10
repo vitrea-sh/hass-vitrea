@@ -1,4 +1,5 @@
-import asyncio
+import logging
+
 from ..control_api.commands import (
     ToggleOnCommand,
     ToggleOffCommand,
@@ -10,6 +11,8 @@ from ..utils.enums import KeyTypes
 
 from .base import BaseDevice
 # Validate Duration, supported key types and state
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class Toggle(BaseDevice):
@@ -87,8 +90,15 @@ class Toggle(BaseDevice):
 
     async def update_state(self, data):
         """Update the state of the switch."""
-        self.is_on = data.get("status")
+        status = data.get("status")
+        if status is not None:
+            self.is_on = status
         countdown = data.get("parameters")
         if countdown is not None:
-            self._countdown_minutes = int(countdown)
+            try:
+                self._countdown_minutes = int(countdown)
+            except (TypeError, ValueError):
+                _LOGGER.warning(
+                    "Invalid countdown for %s: %r", self._id, countdown
+                )
         await self.publish_updates()

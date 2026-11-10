@@ -1,17 +1,13 @@
-"""Home Assistant switch entities for Vitrea."""
+"""Home Assistant number entities for Vitrea boiler countdown timers."""
 
 from homeassistant.components.number import NumberDeviceClass, NumberEntity, NumberMode
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfTime
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import (
-    entity_platform,
-    config_validation as cv,
-)
+from homeassistant.helpers import entity_platform
 
-from .const import DOMAIN, VitreaFeatures
+from .const import DOMAIN
 from .hub import Switch
-import voluptuous as vol
 
 
 async def async_setup_entry(
@@ -32,7 +28,6 @@ class VitreaSwitchCountdown(NumberEntity):
     """Representation of a Vitrea Switch for Home Assistant."""
 
     _attr_should_poll = False
-    _attr_supported_features = [VitreaFeatures.TIMER_ON]
     _attr_device_class = NumberDeviceClass.DURATION
     _attr_native_unit_of_measurement = UnitOfTime.MINUTES
     _attr_mode = NumberMode.SLIDER
@@ -47,12 +42,13 @@ class VitreaSwitchCountdown(NumberEntity):
         self._attr_unique_id = (
             f"{switch.hub.hub_id}-{switch.node_id}-{switch.key_id}-countdown"
         )
+        # Attach to the same device as the boiler switch entity.
         self._attr_device_info = {
-            "identifiers": {(DOMAIN, self._attr_unique_id)},
-            "name": f"{switch.name} Countdown",
+            "identifiers": {
+                (DOMAIN, f"{switch.hub.hub_id}-{switch.node_id}-{switch.key_id}")
+            },
+            "name": switch.name,
             "manufacturer": "Vitrea",
-            "model": "Vitrea Boiler Timer",
-            "icon": "mdi:timer-outline",
         }
 
     async def async_added_to_hass(self) -> None:
@@ -74,15 +70,6 @@ class VitreaSwitchCountdown(NumberEntity):
         """Turn the switch on with a timer."""
         await self._switch.turn_on(duration=minutes)
         return True
-
-    @property
-    def device_info(self):
-        """Information about this entity/device."""
-        return {
-            "identifiers": {(DOMAIN, self._switch._id)},
-            "name": self._attr_name,
-            "manufacturer": self._switch.hub.manufacturer,
-        }
 
     @property
     def available(self) -> bool:

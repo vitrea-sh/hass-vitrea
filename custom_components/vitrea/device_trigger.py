@@ -14,8 +14,6 @@ from homeassistant.const import (
     CONF_ENTITY_ID,
     CONF_PLATFORM,
     CONF_TYPE,
-    STATE_OFF,
-    STATE_ON,
 )
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant
 from homeassistant.helpers import config_validation as cv, entity_registry as er
@@ -23,11 +21,7 @@ from homeassistant.helpers.trigger import TriggerActionType, TriggerInfo
 from homeassistant.helpers.typing import ConfigType
 
 from . import DOMAIN
-import logging
 
-_LOGGER = logging.getLogger(__name__)
-
-# TODO specify your supported trigger types.
 TRIGGER_TYPES = {"Short", "Long", "Release"}
 
 TRIGGER_SCHEMA = DEVICE_TRIGGER_BASE_SCHEMA.extend(
@@ -44,19 +38,11 @@ async def async_get_triggers(
     """List device triggers for Vitrea devices."""
     registry = er.async_get(hass)
     triggers = []
-    # TODO Read this comment and remove it.
-    # This example shows how to iterate over the entities of this device
-    # that match this integration. If your triggers instead rely on
-    # events fired by devices without entities, do something like:
-    # zha_device = await _async_get_zha_device(hass, device_id)
-    # return zha_device.device_triggers
-
-    # Get all the integrations entities for this device
+    # Offer Short/Long/Release triggers for every satellite sensor entity
+    # of this device (detected via its ENUM options).
     for entry in er.async_entries_for_device(registry, device_id):
         if entry.platform != DOMAIN:
             continue
-        # Add triggers for each entity that belongs to this integration
-        # TODO add your own triggers.
         base_trigger = {
             CONF_PLATFORM: "device",
             CONF_DEVICE_ID: device_id,
@@ -84,8 +70,6 @@ async def async_attach_trigger(
     trigger_info: TriggerInfo,
 ) -> CALLBACK_TYPE:
     """Attach a trigger."""
-    # TODO Implement your own logic to attach triggers.
-    # Use the existing state or event triggers from the automation integration.
     if config[CONF_TYPE] == "Short":
         to_state = "Short"
     elif config[CONF_TYPE] == "Long":

@@ -38,10 +38,9 @@ logger:
   default: warning
   logs:
     custom_components.vitrea: debug
-    vitrea_integration: debug
 ```
 
-After enabling, restart Home Assistant and check the logs for entries from `custom_components.vitrea` and `vitrea_integration`.
+After enabling, restart Home Assistant and check the logs for entries from `custom_components.vitrea` (the bundled protocol library logs under the same prefix).
 
 ## Support
 - Issues: https://github.com/vitrea-sh/hass-vitrea/issues

@@ -3,9 +3,7 @@ import asyncio
 import contextlib
 import datetime
 import logging
-import socket
 from collections.abc import Callable
-from typing import Any
 
 from .control_api.commands import (
     AuthenticateCommand,
@@ -79,7 +77,9 @@ class VBoxController:
             return False
         if not self.last_incoming_message:
             return True
-        if (datetime.datetime.now() - self.last_incoming_message).seconds > 50:
+        if (
+            datetime.datetime.now() - self.last_incoming_message
+        ).total_seconds() > 50:
             return False
         if self.response_handler_task and self.response_handler_task.done():
             return False
@@ -151,7 +151,10 @@ class VBoxController:
             )
         if not self.database and not ignore_db:
             await self.read_vitrea_db()
-            await self.update_state()
+            # No status sync here: the consumer requests it (update_state)
+            # once its devices are registered, so the responses have
+            # somewhere to land. Reconnects still resync automatically via
+            # _connection_change_callback.
         if watchdog:
             self.watchdog_task = asyncio.create_task(self.watchdog_loop())
 
@@ -163,67 +166,108 @@ class VBoxController:
             await self.connection.send(GetFullStatusCommand().serialize())
 
     @staticmethod
-    async def validate_controller_availability(ip: str, port: int) -> dict:
-        """Check if the Vitrea Gateway is available and supported."""
+    async def validate_controller_availability(
+        ip: str, port: int, timeout: float = 5.0
+    ) -> dict:
+        """Check if the Vitrea Gateway is available and supported.
+
+        Uses a short-lived asyncio connection with strict timeouts: the vBox
+        accepts only a single host socket, so validation must never linger
+        (and must not block the event loop).
+        """
         result = {
             "supported": False,
             "reason": "",
             "version": "",
             "supports_led_commands": False,
         }
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            try:
-                s.connect((ip, port))
-                s.settimeout(5)
-                s.sendall(AuthenticateCommand().serialize())
-                data = s.recv(1024)
-                parsed_response = parse_response(data)
-                if (
-                    parsed_response.get("type") != "acknowledgment"
-                    and parsed_response.get("subtype", False)
-                    != "keep_alive_acknowledgment"
-                ):
-                    result["reason"] = "auth_failed"
-                else:
-                    s.sendall(GetControllerVersionCommand().serialize())
-                    for _ in range(3):
-                        data = s.recv(1024)
-                        parsed_response = parse_response(data)
-                        if parsed_response.get("type", None) != "version":
-                            continue
-                        minor_version = parsed_response.get("minor_version", 0)
-                        major_version = parsed_response.get("major_version", 0)
-                        
-                        result["version"] = (
-                            str(major_version)
-                            + "."
-                            + str(minor_version)
+        writer = None
+        try:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(ip, port), timeout=timeout
+            )
+
+            frames_seen = 0
+
+            async def scan_for(predicate, window: float):
+                """Read frames for up to `window` seconds; return the first
+                one matching predicate. Live systems push unsolicited status
+                frames at any time, so the interesting frame is rarely the
+                first one."""
+                nonlocal frames_seen
+                loop = asyncio.get_running_loop()
+                deadline = loop.time() + window
+                while (remaining := deadline - loop.time()) > 0:
+                    try:
+                        data = await asyncio.wait_for(
+                            reader.readuntil(b"\r\n"), timeout=remaining
                         )
-                        
-                        if minor_version >= SUPPORTED_VERSIONS.get(
-                            major_version, 200
-                        ):
-                            result["supported"] = True
-                        else:
-                            result["supported"] = False
-                            if major_version in UPGRADEABLE_VERSIONS:
-                                if minor_version >= UPGRADEABLE_VERSIONS.get(major_version, 200):
-                                    result["reason"] = "unsupported_version_upgrade_optional"
-                                else:
-                                    result["reason"] = "unsupported_version"
-                            else:
-                                result["reason"] = "unsupported_version"
-                        break
-                    s.close()
-                    result["supports_led_commands"] = (
-                        major_version >= 9
-                        or major_version < 1
-                    )
-                    _LOGGER.debug(result)
-                    return result
-            except (ConnectionError, TimeoutError):
+                    except asyncio.TimeoutError:
+                        return None
+                    frames_seen += 1
+                    parsed = parse_response(data)
+                    if isinstance(parsed, dict) and predicate(parsed):
+                        return parsed
+                return None
+
+            def is_ack(parsed: dict) -> bool:
+                return (
+                    parsed.get("type") == "acknowledgment"
+                    or parsed.get("subtype") == "keep_alive_acknowledgment"
+                )
+
+            # Firmware quirk (observed on 9.50): the very first P:VITREA on
+            # a fresh socket is not always acknowledged, while every repeat
+            # is — so retry the authentication a few times.
+            ack = None
+            auth_window = min(2.0, timeout)
+            for _ in range(3):
+                writer.write(AuthenticateCommand().serialize())
+                await writer.drain()
+                ack = await scan_for(is_ack, auth_window)
+                if ack:
+                    break
+            if not ack:
+                # Frames without an ack = the controller rejected us; total
+                # silence = wrong host/port or an unresponsive controller.
+                result["reason"] = "auth_failed" if frames_seen else "connection_error"
+                return result
+
+            writer.write(GetControllerVersionCommand().serialize())
+            await writer.drain()
+            parsed_response = await scan_for(
+                lambda parsed: parsed.get("type") == "version", timeout
+            )
+            if parsed_response is None:
                 result["reason"] = "connection_error"
-                s.close()
+                return result
+
+            major_version = parsed_response.get("major_version", 0)
+            minor_version = parsed_response.get("minor_version", 0)
+            result["version"] = f"{major_version}.{minor_version}"
+            if minor_version >= SUPPORTED_VERSIONS.get(major_version, 200):
+                result["supported"] = True
+            elif major_version in UPGRADEABLE_VERSIONS and (
+                minor_version >= UPGRADEABLE_VERSIONS.get(major_version, 200)
+            ):
+                result["reason"] = "unsupported_version_upgrade_optional"
+            else:
+                result["reason"] = "unsupported_version"
+            # LED indicator control (L command) shipped with firmware 9.50.
+            result["supports_led_commands"] = major_version == 0 or (
+                (major_version, minor_version) >= (9, 50)
+            )
+            _LOGGER.debug(result)
+            return result
+        except (ConnectionError, TimeoutError, OSError, asyncio.IncompleteReadError):
+            result["reason"] = "connection_error"
+        finally:
+            # Free the vBox's single socket slot promptly on every path.
+            if writer:
+                writer.close()
+                with contextlib.suppress(ConnectionError, OSError):
+                    await writer.wait_closed()
+        _LOGGER.debug(result)
         return result
 
     async def close(self):
@@ -275,8 +319,11 @@ class VBoxController:
         return True
 
     async def response_thread_loop(self):
-        """Loop to handle incoming responses from the controller in a threaded manner."""
-        response_tasks = set[Any]()
+        """Process controller responses sequentially, preserving arrival order.
+
+        Sequential handling matters: spawning a task per message allowed two
+        rapid status updates for the same key to be applied out of order.
+        """
         while self.enabled:
             try:
                 response = await asyncio.wait_for(
@@ -284,41 +331,18 @@ class VBoxController:
                 )
             except asyncio.TimeoutError:
                 continue
-
-            task = asyncio.create_task(self._response_task(response))
-
-            def _log_done(t: asyncio.Task) -> None:
-                try:
-                    result = t.result()
-                    _LOGGER.debug(
-                        "Response handler finished successfully: %s", result
-                    )
-                except Exception as err:  # noqa: BLE001
-                    _LOGGER.warning("Response handler finished with error: %s", err)
-
-            task.add_done_callback(_log_done)
-            response_tasks.add(task)
-
-            done = {t for t in response_tasks if t.done()}
-            response_tasks.difference_update(done)
+            try:
+                await self._response_task(response)
+            except Exception as err:  # noqa: BLE001 - keep the loop alive
+                _LOGGER.warning("Response handler failed: %s", err, exc_info=err)
 
     async def _response_task(self, response):
         """Handle incoming response from the controller."""
         if not await self._validate_single_response(response):
             return await self._handle_multiple_messages(response)
         try:
-            _LOGGER.debug(("Received Response: ", response))
             self.last_incoming_message = datetime.datetime.now()
-            response_hex = response.hex()
-            _LOGGER.debug(
-                "Response hex starts with: %s (checking for 5654483c)",
-                response_hex[:20],
-            )
-            if response_hex.startswith("5654483c"):  # Params Received
-                _LOGGER.debug(
-                    "Parameter API response detected, vitrea_db_reader exists: %s",
-                    self.vitrea_db_reader is not None,
-                )
+            if response.hex().startswith("5654483c"):  # Params Received
                 if self.vitrea_db_reader:
                     await self.vitrea_db_reader.feed(response)
             else:
@@ -330,14 +354,8 @@ class VBoxController:
                     if item.get("type") == "acknowledgment":
                         if item.get("subtype", "") == "keep_alive_acknowledgment":
                             self.connection.last_keep_alive = item.get("timestamp")
-                            _LOGGER.debug(
-                                "Keep Alive Acknowledged at %s",
-                                item.get("timestamp"),
-                            )
                     elif "status" in item.get("type", ""):
-                        _LOGGER.debug("Received Status Update")
                         await self.publish_updates(item)
-                # Status Update Received
         except (TypeError, ValueError) as e:
             _LOGGER.error("Error parsing response", stack_info=True)
             _LOGGER.error("Response: %s", response.hex())
