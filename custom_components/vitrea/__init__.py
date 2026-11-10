@@ -33,6 +33,21 @@ PLATFORMS: list[Platform] = [
 _LEGACY_DEVICE_ID = re.compile(r"^N(\d{3})-(\d+)$")
 
 
+def _entry_device_with_identifier(
+    registry: dr.DeviceRegistry, entry: ConfigEntry, identifier: tuple[str, str]
+) -> dr.DeviceEntry | None:
+    """Find this config entry's device that carries the identifier.
+
+    Scoped to the entry on purpose: identifiers are not unique across
+    config entries, and the registry's own identifier lookup has a
+    different name in every Home Assistant generation.
+    """
+    for device in dr.async_entries_for_config_entry(registry, entry.entry_id):
+        if identifier in device.identifiers:
+            return device
+    return None
+
+
 @callback
 def _async_migrate_device_identifiers(
     hass: HomeAssistant, entry: ConfigEntry, hub: VitreaHub
@@ -58,7 +73,7 @@ def _async_migrate_device_identifiers(
         if not changed:
             continue
         if any(
-            registry.async_get_device(identifiers={identifier})
+            _entry_device_with_identifier(registry, entry, identifier)
             not in (None, device)
             for identifier in new_identifiers - device.identifiers
         ):
@@ -96,10 +111,9 @@ def _async_split_scene_climate_devices(
             if target == REMOVE:
                 dev_reg.async_remove_device(device.id)
                 break
-            if dev_reg.async_get_device(identifiers={(DOMAIN, target)}) not in (
-                None,
-                device,
-            ):
+            if _entry_device_with_identifier(
+                dev_reg, entry, (DOMAIN, target)
+            ) not in (None, device):
                 continue
             dev_reg.async_update_device(
                 device.id,

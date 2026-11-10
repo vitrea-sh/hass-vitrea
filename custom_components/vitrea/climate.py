@@ -146,6 +146,13 @@ class VitreaClimate(ClimateEntity):
         """Return the temperature we try to reach."""
         return self._thermostat.set_temperature
 
+    # Home Assistant 2026 reads these three under native_* names and warns
+    # when an entity only provides the old ones; older versions (down to
+    # the supported 2025.3) only know the old names. Provide both.
+    native_temperature_unit = temperature_unit
+    native_current_temperature = current_temperature
+    native_target_temperature = target_temperature
+
     @property
     def hvac_mode(self) -> str:
         """Return current operation ie. heat, cool, idle."""
