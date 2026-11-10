@@ -8,9 +8,10 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryNotReady
-from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 
 from .const import DOMAIN
+from .device_ids import REMOVE, plan_shared_device
 from .hub import VitreaHub
 from .multiway import LinkManager
 from .vitrea_integration import supports_v95_features, validate_controller_availability
@@ -67,6 +68,47 @@ def _async_migrate_device_identifiers(
         registry.async_update_device(device.id, new_identifiers=new_identifiers)
 
 
+@callback
+def _async_split_scene_climate_devices(
+    hass: HomeAssistant, entry: ConfigEntry, hub: VitreaHub
+) -> None:
+    """Give scenarios and A/Cs that shared one device their own devices.
+
+    Runs before the platforms are set up. The old device keeps its area and
+    user-given name and follows the climate entity (or the scene when there
+    is no climate entity); entities re-attach through their device_info.
+    """
+    dev_reg = dr.async_get(hass)
+    ent_reg = er.async_get(hass)
+    for device in list(dr.async_entries_for_config_entry(dev_reg, entry.entry_id)):
+        for identifier in list(device.identifiers):
+            if identifier[0] != DOMAIN or not isinstance(identifier[1], str):
+                continue
+            domains = {
+                entity.domain
+                for entity in er.async_entries_for_device(
+                    ent_reg, device.id, include_disabled_entities=True
+                )
+            }
+            target = plan_shared_device(hub.hub_id, identifier[1], domains)
+            if target is None:
+                continue
+            if target == REMOVE:
+                dev_reg.async_remove_device(device.id)
+                break
+            if dev_reg.async_get_device(identifiers={(DOMAIN, target)}) not in (
+                None,
+                device,
+            ):
+                continue
+            dev_reg.async_update_device(
+                device.id,
+                new_identifiers=(device.identifiers - {identifier})
+                | {(DOMAIN, target)},
+            )
+            break
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Vitrea from a config entry."""
 
@@ -116,6 +158,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         raise ConfigEntryNotReady(reason)
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = hub
     _async_migrate_device_identifiers(hass, entry, hub)
+    _async_split_scene_climate_devices(hass, entry, hub)
     # Multiway links (config subentries): wall keys bound to HA entities.
     # The manager is created (but not yet started) before the platforms so
     # the kill-switch entity can restore a paused state ahead of the links

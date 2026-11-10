@@ -13,6 +13,7 @@ from homeassistant.components.climate import (
     HVACMode,
 )
 from .const import DOMAIN
+from .device_ids import climate_device_identifier
 from .entity_debug import log_actuation
 from .hub import Climate
 from .vitrea_integration.utils.enums import (
@@ -68,7 +69,14 @@ class VitreaClimate(ClimateEntity):
         self._attr_name = thermostat.name
         self._attr_unique_id = f"{thermostat.hub.hub_id}-{thermostat.node_id}"
         self._attr_device_info = {
-            "identifiers": {(DOMAIN, self._attr_unique_id)},
+            "identifiers": {
+                (
+                    DOMAIN,
+                    climate_device_identifier(
+                        thermostat.hub.hub_id, thermostat.node_id
+                    ),
+                )
+            },
             "name": thermostat.name,
             "manufacturer": "Vitrea",
             "model": "TMSF"
