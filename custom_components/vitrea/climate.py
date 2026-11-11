@@ -1,7 +1,7 @@
 from typing import Any
 from homeassistant.components.climate.const import ATTR_FAN_MODE, ATTR_HVAC_MODE
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import ATTR_TEMPERATURE
+from homeassistant.const import ATTR_TEMPERATURE, UnitOfTemperature
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.components.climate import (
@@ -12,7 +12,6 @@ from homeassistant.components.climate import (
     FAN_MEDIUM,
     FAN_AUTO,
     HVACMode,
-    UnitOfTemperature,
 )
 from .const import DOMAIN
 from .hub import Climate
@@ -100,8 +99,8 @@ class VitreaClimate(ClimateEntity):
         )
 
     @property
-    def temperature_unit(self) -> str:
-        """Return the unit of measurement."""
+    def native_temperature_unit(self) -> str:
+        """Return the unit the device reports temperatures in."""
         if not self._thermostat.temperature_mode:
             return UnitOfTemperature.CELSIUS
         return self.TEMPERATURE_UNITS_MAPPING[self._thermostat.temperature_mode.value]
@@ -130,13 +129,13 @@ class VitreaClimate(ClimateEntity):
         ]
 
     @property
-    def current_temperature(self) -> float:
-        """Return the current temperature."""
+    def native_current_temperature(self) -> float:
+        """Return the measured temperature, in native_temperature_unit."""
         return self._thermostat.measured_temperature
 
     @property
-    def target_temperature(self) -> float:
-        """Return the temperature we try to reach."""
+    def native_target_temperature(self) -> float:
+        """Return the temperature we try to reach, in native_temperature_unit."""
         return self._thermostat.set_temperature
 
     @property
