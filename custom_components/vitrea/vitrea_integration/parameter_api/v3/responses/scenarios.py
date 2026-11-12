@@ -1,6 +1,5 @@
 from ....utils.enums import CommandNumber
 from .base import BaseParameterResponseParser
-from ..commands.scenarios import GetScenarioParams
 from ....models.database import ScenarioModel
 
 class ScenarioNumbersParser(BaseParameterResponseParser):

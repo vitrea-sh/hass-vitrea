@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+import re
+
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 
 from .const import DOMAIN
+from .device_ids import REMOVE, plan_shared_device
 from .hub import VitreaHub
+from .multiway import LinkManager
+from .vitrea_integration import supports_v95_features, validate_controller_availability
 
-# TODO List the platforms that you want to support.
-# For your initial PR, limit it to 1 platform.
 PLATFORMS: list[Platform] = [
     Platform.SWITCH,
     Platform.LIGHT,
@@ -21,32 +25,185 @@ PLATFORMS: list[Platform] = [
     Platform.CLIMATE,
     Platform.BINARY_SENSOR,
     Platform.NUMBER,
+    Platform.EVENT,
 ]
+
+# Device identifiers used to be the bare key id ("N001-1"), which collides
+# across two Vitrea hubs. They are now hub-scoped ("<hub_id>-1-1").
+_LEGACY_DEVICE_ID = re.compile(r"^N(\d{3})-(\d+)$")
+
+
+def _entry_device_with_identifier(
+    registry: dr.DeviceRegistry, entry: ConfigEntry, identifier: tuple[str, str]
+) -> dr.DeviceEntry | None:
+    """Find this config entry's device that carries the identifier.
+
+    Scoped to the entry on purpose: identifiers are not unique across
+    config entries, and the registry's own identifier lookup has a
+    different name in every Home Assistant generation.
+    """
+    for device in dr.async_entries_for_config_entry(registry, entry.entry_id):
+        if identifier in device.identifiers:
+            return device
+    return None
+
+
+@callback
+def _async_migrate_device_identifiers(
+    hass: HomeAssistant, entry: ConfigEntry, hub: VitreaHub
+) -> None:
+    """Rewrite legacy device identifiers to hub-scoped ones."""
+    registry = dr.async_get(hass)
+    for device in dr.async_entries_for_config_entry(registry, entry.entry_id):
+        new_identifiers = set()
+        changed = False
+        for domain, identifier in device.identifiers:
+            match = (
+                _LEGACY_DEVICE_ID.match(identifier)
+                if domain == DOMAIN and isinstance(identifier, str)
+                else None
+            )
+            if match:
+                node_id = int(match.group(1))
+                key_id = int(match.group(2))
+                new_identifiers.add((DOMAIN, f"{hub.hub_id}-{node_id}-{key_id}"))
+                changed = True
+            else:
+                new_identifiers.add((domain, identifier))
+        if not changed:
+            continue
+        if any(
+            _entry_device_with_identifier(registry, entry, identifier)
+            not in (None, device)
+            for identifier in new_identifiers - device.identifiers
+        ):
+            # Target device already exists; entities re-attach to it via
+            # their device_info, the legacy shell is left for HA cleanup.
+            continue
+        registry.async_update_device(device.id, new_identifiers=new_identifiers)
+
+
+@callback
+def _async_split_scene_climate_devices(
+    hass: HomeAssistant, entry: ConfigEntry, hub: VitreaHub
+) -> None:
+    """Give scenarios and A/Cs that shared one device their own devices.
+
+    Runs before the platforms are set up. The old device keeps its area and
+    user-given name and follows the climate entity (or the scene when there
+    is no climate entity); entities re-attach through their device_info.
+    """
+    dev_reg = dr.async_get(hass)
+    ent_reg = er.async_get(hass)
+    for device in list(dr.async_entries_for_config_entry(dev_reg, entry.entry_id)):
+        for identifier in list(device.identifiers):
+            if identifier[0] != DOMAIN or not isinstance(identifier[1], str):
+                continue
+            domains = {
+                entity.domain
+                for entity in er.async_entries_for_device(
+                    ent_reg, device.id, include_disabled_entities=True
+                )
+            }
+            target = plan_shared_device(hub.hub_id, identifier[1], domains)
+            if target is None:
+                continue
+            if target == REMOVE:
+                dev_reg.async_remove_device(device.id)
+                break
+            if _entry_device_with_identifier(
+                dev_reg, entry, (DOMAIN, target)
+            ) not in (None, device):
+                continue
+            dev_reg.async_update_device(
+                device.id,
+                new_identifiers=(device.identifiers - {identifier})
+                | {(DOMAIN, target)},
+            )
+            break
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Vitrea from a config entry."""
 
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = VitreaHub(
+    version = entry.data.get("controller_version")
+    if version is None:
+        # One-time backfill for entries created before the firmware version
+        # was stored (uses a short-lived validation socket, then releases
+        # the vBox's single slot before the main connection opens).
+        probe = await validate_controller_availability(
+            entry.data["ip"], entry.data["port"]
+        )
+        version = probe.get("version", "")
+        if version:
+            hass.config_entries.async_update_entry(
+                entry, data={**entry.data, "controller_version": version}
+            )
+    # Firmware 9.5 feature set: LED indicator control and Room-On groups.
+    supports_v95 = (
+        supports_v95_features(version)
+        if version
+        else entry.data.get("supports_led_commands", False)
+    )
+    hub = VitreaHub(
         hass=hass,
         host=entry.data["ip"],
         port=entry.data["port"],
         append_room_name=entry.data["append_room_to_name"],
-        supports_led_commands=entry.data.get("supports_led_commands", False),
+        supports_led_commands=supports_v95,
+        toggles_as_lights=entry.data.get("toggles_as_lights", False),
+        supports_room_on=supports_v95,
     )
     filter_mw = entry.data.get("filter_mw", True)
-    success, reason = await hass.data[DOMAIN][entry.entry_id].read_gateway(
-        filter_mw=filter_mw
-    )
+    try:
+        success, reason = await hub.read_gateway(filter_mw=filter_mw)
+    except (ConnectionError, TimeoutError, OSError) as err:
+        # Close before retrying, otherwise every ConfigEntryNotReady retry
+        # leaks a connection plus its watchdog and background tasks.
+        await hub.controller.close()
+        raise ConfigEntryNotReady(str(err)) from err
+    except Exception:
+        # Any other failure would leave the entry in a failed state that
+        # Home Assistant never unloads; do not keep the host slot.
+        await hub.controller.close()
+        raise
     if not success:
+        await hub.controller.close()
         raise ConfigEntryNotReady(reason)
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = hub
+    _async_migrate_device_identifiers(hass, entry, hub)
+    _async_split_scene_climate_devices(hass, entry, hub)
+    # Multiway links (config subentries): wall keys bound to HA entities.
+    # The manager is created (but not yet started) before the platforms so
+    # the kill-switch entity can restore a paused state ahead of the links
+    # being built.
+    link_manager = LinkManager(hass, entry, hub)
+    hass.data[DOMAIN][f"{entry.entry_id}_links"] = link_manager
+    try:
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+        await link_manager.async_setup()
+    except Exception:
+        # A failed setup is not unloaded by Home Assistant, so release the
+        # controller's single host slot here instead of holding it forever.
+        hass.data[DOMAIN].pop(f"{entry.entry_id}_links", None)
+        hass.data[DOMAIN].pop(entry.entry_id, None)
+        await hub.controller.close()
+        raise
+    entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     return True
+
+
+async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Reload the entry when its data or subentries change."""
+    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
 
+    link_manager = hass.data.get(DOMAIN, {}).pop(f"{entry.entry_id}_links", None)
+    if link_manager is not None:
+        await link_manager.async_teardown()
     if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
         hub = hass.data[DOMAIN].pop(entry.entry_id)
         await hub.controller.close()

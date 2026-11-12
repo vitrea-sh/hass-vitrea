@@ -29,40 +29,6 @@ class DimmerIntensityCommand(Command):
             raise ValueError("Intensity must be an integer between 0 and 100.")
 
 
-class DimmerUpCommand(Command):
-    TEMPLATE = "H:N{node_id:03d}:{key_id:01d}:D:100\r\n"
-
-    def __init__(self, node_id, key_id):
-        self.node_id = node_id
-        self.key_id = key_id
-
-    def serialize(self):
-        return self.TEMPLATE.format(node_id=self.node_id, key_id=self.key_id).encode()
-
-    def validate(self):
-        if not isinstance(self.node_id, int) or not 0 <= self.node_id <= 999:
-            raise ValueError("Node ID must be an integer between 0 and 999.")
-        if not isinstance(self.key_id, int) or not 0 <= self.key_id <= 9:
-            raise ValueError("Key ID must be an integer between 0 and 9.")
-
-
-class DimmerDownCommand(Command):
-    TEMPLATE = "H:N{node_id:03d}:{key_id:01d}:D:000\r\n"
-
-    def __init__(self, node_id, key_id):
-        self.node_id = node_id
-        self.key_id = key_id
-
-    def serialize(self):
-        return self.TEMPLATE.format(node_id=self.node_id, key_id=self.key_id).encode()
-
-    def validate(self):
-        if not isinstance(self.node_id, int) or not 0 <= self.node_id <= 999:
-            raise ValueError("Node ID must be an integer between 0 and 999.")
-        if not isinstance(self.key_id, int) or not 0 <= self.key_id <= 9:
-            raise ValueError("Key ID must be an integer between 0 and 9.")
-
-
 class DimmerStopCommand(Command):
     TEMPLATE = "H:N{node_id:03d}:{key_id:01d}:D:000:255\r\n"
 

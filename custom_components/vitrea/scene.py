@@ -3,8 +3,9 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_platform
 from .const import DOMAIN
+from .device_ids import scene_device_identifier
+from .entity_debug import log_actuation
 from .hub import Scene as HubScene
-import voluptuous as vol
 
 
 async def async_setup_entry(
@@ -30,7 +31,9 @@ class VitreaScene(Scene):
         self._attr_name = scene.name
         self._attr_unique_id = f"{scene.hub.hub_id}-{scene.scene_id}"
         self._attr_device_info = {
-            "identifiers": {(DOMAIN, self._attr_unique_id)},
+            "identifiers": {
+                (DOMAIN, scene_device_identifier(scene.hub.hub_id, scene.scene_id))
+            },
             "name": scene.name,
             "manufacturer": "Vitrea",
             "model": "Vitrea Scenario",
@@ -48,6 +51,11 @@ class VitreaScene(Scene):
         # method that will be called when the device is updated.
         self._scene.register_callback(self.schedule_update_ha_state)
 
+    async def async_will_remove_from_hass(self) -> None:
+        """Entity being removed from hass."""
+        self._scene.remove_callback(self.schedule_update_ha_state)
+
     async def async_activate(self, **kwargs):
         """Turn the scene on."""
+        log_actuation(self, "scene.activate")
         await self._scene.run()

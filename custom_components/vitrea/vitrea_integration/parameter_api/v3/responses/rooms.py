@@ -1,6 +1,5 @@
 from ....utils.enums import CommandNumber
 from .base import BaseParameterResponseParser
-from ..commands.rooms import GetRoomParams
 from ....models.database import RoomModel
 
 class RoomNumbersParser(BaseParameterResponseParser):

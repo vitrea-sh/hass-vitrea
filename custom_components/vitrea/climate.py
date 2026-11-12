@@ -1,7 +1,6 @@
 from typing import Any
-from homeassistant.components.climate.const import ATTR_FAN_MODE, ATTR_HVAC_MODE
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import ATTR_TEMPERATURE
+from homeassistant.const import ATTR_TEMPERATURE, UnitOfTemperature
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.components.climate import (
@@ -12,9 +11,10 @@ from homeassistant.components.climate import (
     FAN_MEDIUM,
     FAN_AUTO,
     HVACMode,
-    UnitOfTemperature,
 )
 from .const import DOMAIN
+from .device_ids import climate_device_identifier
+from .entity_debug import log_actuation
 from .hub import Climate
 from .vitrea_integration.utils.enums import (
     ThermostatTemperatureModes,
@@ -69,7 +69,14 @@ class VitreaClimate(ClimateEntity):
         self._attr_name = thermostat.name
         self._attr_unique_id = f"{thermostat.hub.hub_id}-{thermostat.node_id}"
         self._attr_device_info = {
-            "identifiers": {(DOMAIN, self._attr_unique_id)},
+            "identifiers": {
+                (
+                    DOMAIN,
+                    climate_device_identifier(
+                        thermostat.hub.hub_id, thermostat.node_id
+                    ),
+                )
+            },
             "name": thermostat.name,
             "manufacturer": "Vitrea",
             "model": "TMSF"
@@ -139,6 +146,13 @@ class VitreaClimate(ClimateEntity):
         """Return the temperature we try to reach."""
         return self._thermostat.set_temperature
 
+    # Home Assistant 2026 reads these three under native_* names and warns
+    # when an entity only provides the old ones; older versions (down to
+    # the supported 2025.3) only know the old names. Provide both.
+    native_temperature_unit = temperature_unit
+    native_current_temperature = current_temperature
+    native_target_temperature = target_temperature
+
     @property
     def hvac_mode(self) -> str:
         """Return current operation ie. heat, cool, idle."""
@@ -175,16 +189,23 @@ class VitreaClimate(ClimateEntity):
         # (rather than in the __init__)
         self._thermostat.register_callback(self.schedule_update_ha_state)
 
+    async def async_will_remove_from_hass(self) -> None:
+        """Entity being removed from hass."""
+        self._thermostat.remove_callback(self.schedule_update_ha_state)
+
     async def async_turn_on(self) -> None:
         """Turn the entity on."""
+        log_actuation(self, "climate.turn_on")
         await self._thermostat.turn_on()
 
     async def async_turn_off(self) -> None:
         """Turn the entity off."""
+        log_actuation(self, "climate.turn_off")
         await self._thermostat.turn_off()
 
     async def async_set_temperature(self, **kwargs: Any) -> None:
         """Set new target temperature."""
+        log_actuation(self, "climate.set_temperature")
         temperature = kwargs.get(ATTR_TEMPERATURE)
         await self._thermostat.turn_on(temperature=temperature)
 
@@ -193,9 +214,6 @@ class VitreaClimate(ClimateEntity):
         if hvac_mode == HVACMode.OFF:
             await self._thermostat.turn_off()
             return
-        if not self._thermostat.state:
-            await self._thermostat.turn_on()
-            await asyncio.sleep(0.05)
         if (
             self._thermostat.thermostat_type == AirConditionerType.TMSF
             and hvac_mode == HVACMode.HEAT
@@ -208,6 +226,24 @@ class VitreaClimate(ClimateEntity):
             if value == hvac_mode
         )
         mode = ThermostatModes(mode)
+        if not self._thermostat.state:
+            # Turning on and changing mode must be ONE complete command.
+            # Sending "on" followed by a partial mode change makes the
+            # controller apply the mode to its still-off state and switch
+            # the A/C back off about a second later.
+            if (
+                self._thermostat.fan_speed is not None
+                and self._thermostat.temperature_mode is not None
+                and self._thermostat.set_temperature
+            ):
+                await self._thermostat.turn_on(
+                    mode=mode, temperature=self._thermostat.set_temperature
+                )
+                return
+            # State not known yet: turn on with the controller's previous
+            # settings and give it time to settle before the mode change.
+            await self._thermostat.turn_on()
+            await asyncio.sleep(2)
         await self._thermostat.turn_on(mode=mode)
 
     async def async_set_fan_mode(self, fan_mode) -> None:

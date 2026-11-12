@@ -1,5 +1,4 @@
 from .base import BaseDevice
-from ..vbox_controller import VBoxController
 from ..utils.enums import KeyTypes
 import logging
 from ..control_api.commands import (

@@ -103,6 +103,15 @@ class Dimmer(BaseDevice):
 
     async def update_state(self, data):
         """Update the state of the light."""
-        intensity = int(data.get("parameters"))
-        self.intensity = intensity
+        params = data.get("parameters")
+        if params is None:
+            _LOGGER.debug(
+                "Ignoring dimmer status without intensity for %s: %s", self._id, data
+            )
+            return
+        try:
+            self.intensity = int(params)
+        except (TypeError, ValueError):
+            _LOGGER.warning("Invalid dimmer intensity for %s: %r", self._id, params)
+            return
         await self.publish_updates()

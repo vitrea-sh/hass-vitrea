@@ -3,6 +3,7 @@ import datetime
 import logging
 from typing import Callable, Optional
 
+from ...utils.enums import CommandNumber
 from .commands.acs import GetACNumbers
 from .commands.base import BaseParameterCommandGenerator
 from .commands.floors import GetFloorNumbers
@@ -12,13 +13,7 @@ from .commands.scenarios import GetScenarioNumbers
 from .responses.parser import DBResponseParserFactory
 
 from ...models.database import (
-    AirConditionerModel,
     BaseVitreaModel,
-    FloorModel,
-    KeyModel,
-    KeypadModel,
-    RoomModel,
-    ScenarioModel,
     VitreaDatabaseModel,
 )
 
@@ -133,6 +128,7 @@ class VitreaDatabaseReader:
         self.writer = write
         self.db = VitreaDatabaseModel()
         self.pending_request: Optional[asyncio.Future] = None
+        self._pending_command_number: Optional[int] = None
         self.request_lock = asyncio.Lock()
         self._follow_up_commands = []
         self._follow_up_task: Optional[asyncio.Task] = None
@@ -161,7 +157,6 @@ class VitreaDatabaseReader:
         Raises:
             TimeoutError: If response not received within timeout period
         """
-        _LOGGER.debug("send_command() called for: %s", command_generator.command_number)
         if current_attempt >= max_attempts:
             raise TimeoutError(f"Max attempts reached for command {command_generator.command_number}")
         async with self.request_lock:
@@ -175,18 +170,17 @@ class VitreaDatabaseReader:
 
             # Create new promise for this request
             self.pending_request = asyncio.Future()
+            self._pending_command_number = command_generator.command_number.value
             command = await command_generator.serialize()
-            _LOGGER.debug("Sending command: %s", command.hex())
             await self.writer(command)
 
             # Store reference to the Future before releasing lock
             future = self.pending_request
 
         # Wait for response outside the lock (will be resolved by feed())
-        _LOGGER.debug("Waiting for response with timeout: %s", timeout)
         try:
             result = await asyncio.wait_for(future, timeout=timeout)
-            _LOGGER.debug("Received response result: %s", result)
+            _LOGGER.debug("Response for %s: %s", command_generator.command_number, result)
             # Wait for any follow-up commands to complete before returning
             # This ensures all follow-ups (including nested ones) are done
             if self._follow_up_task and not self._follow_up_task.done():
@@ -198,7 +192,15 @@ class VitreaDatabaseReader:
                     # Follow-up commands failed, but original command succeeded
             return result
         except (asyncio.TimeoutError, asyncio.CancelledError) as e:
-            _LOGGER.error("Timeout or cancellation waiting for response: %s", e)
+            # Retried below; the caller reports a final failure. Firmware
+            # 9.5x regularly drops the first request after a connect.
+            _LOGGER.debug(
+                "No response to %s (attempt %s of %s): %r",
+                command_generator.command_number,
+                current_attempt + 1,
+                max_attempts,
+                e,
+            )
             # Clear pending request if it timed out or was cancelled
             async with self.request_lock:
                 if self.pending_request is future:
@@ -250,18 +252,28 @@ class VitreaDatabaseReader:
         Args:
             data: Raw response bytes from controller
         """
-        _LOGGER.debug("feed() called with data: %s", data.hex()[:50])
         # Resolve pending promise if it exists
         future_to_resolve = None
         async with self.request_lock:
             if self.pending_request and not self.pending_request.done():
+                # Frame layout: VTH< C#(1) len(2) ... — only resolve the
+                # pending future with a response for the SAME command number,
+                # otherwise a late reply from a timed-out attempt can hand
+                # the wrong data to the current request.
+                if (
+                    self._pending_command_number is not None
+                    and len(data) > 4
+                    and data[4] != self._pending_command_number
+                ):
+                    _LOGGER.warning(
+                        "Ignoring parameter response for command %s while "
+                        "waiting for command %s",
+                        data[4],
+                        self._pending_command_number,
+                    )
+                    return
                 future_to_resolve = self.pending_request
                 self.pending_request = None  # Clear before resolving to prevent race
-                _LOGGER.debug("Found pending request to resolve")
-            else:
-                _LOGGER.debug("No pending request found (pending_request: %s, done: %s)", 
-                             self.pending_request, 
-                             self.pending_request.done() if self.pending_request else None)
 
         if future_to_resolve is None:
             # No pending request, this might be an unsolicited response
@@ -277,9 +289,7 @@ class VitreaDatabaseReader:
                 if not future_to_resolve.done():
                     future_to_resolve.set_exception(ValueError("No parser found for response"))
                 return
-            _LOGGER.debug("Created parser: %s", parser.__class__.__name__)
             items = await parser.parse_response()
-            _LOGGER.debug("Parser returned items: %s", type(items))
 
             # Update database
             if isinstance(items, list):
@@ -313,28 +323,48 @@ class VitreaDatabaseReader:
 
             # Process follow-up commands asynchronously as a task
             # send_command() will wait for this task to complete
-            if self._follow_up_commands:
-                async def process_follow_ups():
-                    try:
-                        await self._process_follow_up_commands()
-                    except Exception as e:
-                        _LOGGER.error("Error processing follow-up commands: %s", e)
-                        raise
-                    finally:
-                        # Clear the task reference when done
-                        self._follow_up_task = None
-                
-                self._follow_up_task = asyncio.create_task(process_follow_ups())
-            else:
-                # No follow-up commands, clear any existing task
-                self._follow_up_task = None
+            self._start_follow_up_processing()
 
         except Exception as e:
+            if len(data) > 4 and data[4] == CommandNumber.GetACParams.value:
+                # One unreadable AC record must never wedge the whole DB
+                # load: drop it from the expected count, keep the follow-up
+                # chain alive, and let every other entity come up.
+                _LOGGER.warning(
+                    "Skipping unparseable AC record (%s): %s — its climate "
+                    "entity will be missing, the rest of the DB still loads",
+                    data.hex(),
+                    e,
+                )
+                self.db.no_of_acs = max(0, self.db.no_of_acs - 1)
+                if not future_to_resolve.done():
+                    future_to_resolve.set_result([])
+                await self._sequential_callback.queue_next_ac()
+                self._start_follow_up_processing()
+                return
             _LOGGER.error(e, stack_info=True)
             # Reject promise on error
             if not future_to_resolve.done():
                 future_to_resolve.set_exception(e)
             raise
+
+    def _start_follow_up_processing(self):
+        """Run queued follow-up commands in a task send_command() awaits."""
+        if self._follow_up_commands:
+            async def process_follow_ups():
+                try:
+                    await self._process_follow_up_commands()
+                except Exception as e:
+                    _LOGGER.error("Error processing follow-up commands: %s", e)
+                    raise
+                finally:
+                    # Clear the task reference when done
+                    self._follow_up_task = None
+
+            self._follow_up_task = asyncio.create_task(process_follow_ups())
+        else:
+            # No follow-up commands, clear any existing task
+            self._follow_up_task = None
 
     async def read_vitrea_controller(
         self, force: bool = False, timeout_seconds: int = 45

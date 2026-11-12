@@ -5,7 +5,6 @@ from ..control_api.commands import (
     ThermostatOffCommand,
     ThermostatSetParamsCommand,
     ThermostatParams,
-    ThermostatCommandTypes,
     ThermostatUpCommand,
     ThermostatDownCommand,
 )

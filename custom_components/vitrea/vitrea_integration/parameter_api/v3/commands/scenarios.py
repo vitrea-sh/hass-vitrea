@@ -1,6 +1,5 @@
 from ....utils.enums import CommandNumber
 from .base import BaseParameterCommandGenerator
-from codecs import encode
 
 class GetScenarioNumbers(BaseParameterCommandGenerator):
     COMMAND_NUMBER = CommandNumber.GetSceneNumbers

@@ -1,11 +1,18 @@
 turn_on_with_timer:
   name: Turn on with timer
+  description: Turn the switch on and have the controller turn it off after the given time.
   target:
     entity:
       domain: switch
   fields:
     minutes:
-      description: 'Number of minutes to keep the switch on'
+      name: Minutes
+      description: Number of minutes to keep the switch on. 0 keeps it on with no timer.
       required: true
-      type: integer
       default: 60
+      selector:
+        number:
+          min: 0
+          max: 120
+          mode: box
+          unit_of_measurement: min

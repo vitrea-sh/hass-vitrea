@@ -20,7 +20,7 @@ class BaseDevice:
         self.key_name = key_name
         self.room_name = room_name
         if append_room_to_name:
-            self.name = f"{room_name} {key_name}"
+            self.name = f"{room_name} {key_name}".strip()
         else:
             self.name = key_name
         self._callbacks = set()
@@ -38,8 +38,15 @@ class BaseDevice:
     async def publish_updates(self, *args, **kwargs) -> None:
         """Schedule call all registered callbacks."""
         _LOGGER.debug("Publishing updates for %s", self._id)
-        for callback in self._callbacks:
-            callback(*args, **kwargs)
+        # Iterate over a copy so a callback may (de)register during the loop,
+        # and isolate failures: one bad callback must not block the rest.
+        for callback in list(self._callbacks):
+            try:
+                callback(*args, **kwargs)
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.warning(
+                    "Update callback failed for %s: %s", self._id, err
+                )
 
     async def get_state(self):
         raise NotImplementedError

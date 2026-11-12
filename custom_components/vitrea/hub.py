@@ -1,7 +1,7 @@
 """Vitrea Hub class."""
 
+import asyncio
 import logging
-from numbers import Number
 
 from .vitrea_integration.models.thermostat import (
     Thermostat,
@@ -11,6 +11,7 @@ from homeassistant.core import HomeAssistant
 from .vitrea_integration import VBoxController
 from .vitrea_integration.models.blind import Blind
 from .vitrea_integration.models.light import Dimmer
+from .vitrea_integration.models.room_on import RoomOn as RoomOnModel
 from .vitrea_integration.models.toggle import Toggle
 from .vitrea_integration.models.satellite import Satellite
 from .vitrea_integration.models.push_button import PushButton as PushButtonModel
@@ -38,6 +39,69 @@ class Switch(Toggle):
         **kwargs,
     ):
         """Initialize the Vitrea Switch."""
+        super().__init__(
+            node_id=node_id,
+            key_id=key_id,
+            key_name=key_name,
+            room_name=room_name,
+            controller=hub.controller,
+            **kwargs,
+        )
+        self.hub = hub
+
+
+class ApplianceSwitch(Switch):
+    """Boiler/heater keys: stay switch entities even when plain toggles
+    are exposed as lights."""
+
+    supported_key_types = [
+        VitreaKeyTypes.Boiler.value,
+        VitreaKeyTypes.Heater.value,
+    ]
+
+
+class ToggleLight(Toggle):
+    """A plain toggle key exposed as an on/off light entity."""
+
+    SUPPORTS_TIMER = True
+    supported_key_types = [VitreaKeyTypes.Toggle.value]
+
+    def __init__(
+        self,
+        node_id: int,
+        key_id: int,
+        key_name: str,
+        room_name: str,
+        hub: "VitreaHub",
+        **kwargs,
+    ):
+        """Initialize the Vitrea Toggle Light."""
+        super().__init__(
+            node_id=node_id,
+            key_id=key_id,
+            key_name=key_name,
+            room_name=room_name,
+            controller=hub.controller,
+            **kwargs,
+        )
+        self.hub = hub
+
+
+class RoomOnLight(RoomOnModel):
+    """A Room-On key (controller-side light group, firmware 9.5+)."""
+
+    SUPPORTS_TIMER = False
+
+    def __init__(
+        self,
+        node_id: int,
+        key_id: int,
+        key_name: str,
+        room_name: str,
+        hub: "VitreaHub",
+        **kwargs,
+    ):
+        """Initialize the Vitrea Room On group."""
         super().__init__(
             node_id=node_id,
             key_id=key_id,
@@ -213,7 +277,6 @@ class VitreaHub:
     """Vitrea Hub class."""
 
     manufacturer = "Vitrea"
-    supported_classes = [Light, Switch, Cover, SatelliteButton, PushButton]
     MW_KEY_TYPES = [VitreaKeyTypes.BlindMW.value, VitreaKeyTypes.ToggleMW.value]
 
     def __init__(
@@ -223,6 +286,8 @@ class VitreaHub:
         hass: HomeAssistant,
         append_room_name: bool = True,
         supports_led_commands: bool = False,
+        toggles_as_lights: bool = False,
+        supports_room_on: bool = False,
     ) -> None:
         """Initialize the Vitrea Hub."""
         self.host = host
@@ -238,6 +303,19 @@ class VitreaHub:
             ip=host, port=port, status_update_callback=self.update_state_callback
         )
         self.supports_led_commands = supports_led_commands
+        self._offline_task: asyncio.Task | None = None
+        # Bumped on every (re)connect; consumers use it to recognise the
+        # status poll that follows a connect as a baseline, not a press.
+        self.connection_generation = 0
+        # Device-class dispatch order matters: first class whose
+        # supported_key_types contains the key type wins.
+        self.supported_classes = [Light, Cover, SatelliteButton, PushButton]
+        if toggles_as_lights:
+            self.supported_classes += [ToggleLight, ApplianceSwitch]
+        else:
+            self.supported_classes += [Switch]
+        if supports_room_on:
+            self.supported_classes += [RoomOnLight]
 
     async def read_gateway(self, filter_mw: bool = True):
         """Initialize the Vitrea Hub."""
@@ -251,6 +329,10 @@ class VitreaHub:
             reason = "Failed to get devices from Vitrea Gateway"
             _LOGGER.error(reason)
             return False, reason
+        # One spec-recommended bulk sync (H:NALL:G) covering nodes, A/Cs,
+        # outputs and inputs — sent only after every device is registered,
+        # so no status frame can arrive before its device exists.
+        await self.controller.update_state()
         return True, ""
 
     async def _get_devices(self, filter_mw: bool):
@@ -276,7 +358,6 @@ class VitreaHub:
                         add_timer=key_type == VitreaKeyTypes.Boiler.value,
                     )
                     self.devices[device._id] = device
-                    await device.get_state()
         for scenario in data.get("scenarios", []):
             room = scenario.get("room", None)
             if not room:
@@ -305,7 +386,6 @@ class VitreaHub:
                 append_room_to_name=self.append_room_name,
             )
             self.hvacs[tmst._id] = tmst
-            await tmst.get_state()
 
     @property
     def hub_id(self) -> str:
@@ -316,6 +396,12 @@ class VitreaHub:
         """Test the connection to the Vitrea Hub."""
         return self.controller.connection.connected
 
+    # Short reconnects (single-socket contention, network blips) must not
+    # flip entities to unavailable: the unavailable->on/off restoration
+    # transitions can trigger user automations with plain state triggers,
+    # making the integration look like it actuates devices by itself.
+    OFFLINE_GRACE_SECONDS = 5.0
+
     async def update_state_callback(self, result):
         """Update the state of a device."""
         if result.get("type") == "node_status":
@@ -324,17 +410,38 @@ class VitreaHub:
             if device:
                 await device.update_state(result)
         elif result.get("type") == "connection":
-            self.online = result.get("status")
-            for device in self.devices.values():
-                await device.publish_updates()
-            for scene in self.scenes.values():
-                await scene.publish_updates()
-            for hvac in self.hvacs.values():
-                await hvac.publish_updates()
+            await self._handle_connection_change(bool(result.get("status")))
         elif result.get("type") == "ac_status":
             hvac = self.hvacs.get(f"N{result.get('ac_id'):03d}", None)
             if hvac:
                 await hvac.update_state(result)
+
+    async def _handle_connection_change(self, connected: bool) -> None:
+        if connected:
+            self.connection_generation += 1
+            if self._offline_task and not self._offline_task.done():
+                self._offline_task.cancel()
+                self._offline_task = None
+            if not self.online:
+                self.online = True
+                await self._publish_availability()
+        elif self.online and (
+            self._offline_task is None or self._offline_task.done()
+        ):
+            self._offline_task = asyncio.create_task(self._mark_offline_after_grace())
+
+    async def _mark_offline_after_grace(self) -> None:
+        await asyncio.sleep(self.OFFLINE_GRACE_SECONDS)
+        self.online = False
+        await self._publish_availability()
+
+    async def _publish_availability(self) -> None:
+        for device in self.devices.values():
+            await device.publish_updates()
+        for scene in self.scenes.values():
+            await scene.publish_updates()
+        for hvac in self.hvacs.values():
+            await hvac.publish_updates()
 
     async def async_unload_entry(self):
         """Disconnect from the Vitrea Hub."""

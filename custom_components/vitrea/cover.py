@@ -9,6 +9,7 @@ from homeassistant.components.cover import (
 )
 
 from .const import DOMAIN
+from .entity_debug import log_actuation
 from .hub import Cover
 
 
@@ -61,16 +62,6 @@ class VitreaCover(CoverEntity):
         return self._cover.hub.online
 
     @property
-    def device_info(self):
-        """Information about this entity/device."""
-        return {
-            "identifiers": {(DOMAIN, self._cover._id)},
-            # If desired, the name for the device could be different to the entity
-            "name": self._attr_name,
-            "manufacturer": self._cover.hub.manufacturer,
-        }
-
-    @property
     def current_cover_position(self):
         return self._cover.current_cover_position
 
@@ -87,13 +78,17 @@ class VitreaCover(CoverEntity):
         return self._cover.is_closing
 
     async def async_open_cover(self, **kwargs):
+        log_actuation(self, "cover.open")
         await self._cover.blind_up()
 
     async def async_close_cover(self, **kwargs):
+        log_actuation(self, "cover.close")
         await self._cover.blind_down()
 
     async def async_stop_cover(self, **kwargs):
+        log_actuation(self, "cover.stop")
         await self._cover.stop()
 
     async def async_set_cover_position(self, **kwargs: Any) -> None:
+        log_actuation(self, "cover.set_position")
         await self._cover.set_location(kwargs["position"])

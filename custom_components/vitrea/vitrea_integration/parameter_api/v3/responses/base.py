@@ -87,8 +87,7 @@ class BaseParameterResponseParser:
             self.response_bytes = await self._hex_to_byte_list(self.response)
             self.data_length = struct.unpack(">H", bytes(self.response_bytes[5:7]))[0]
             await self.validate()
-            
-            response_length = struct.unpack(">H", bytes(self.response_bytes[5:7]))[0]
+
             data = self.response_bytes[7:-1]
             self.response_hex = data
         return self.response_hex
