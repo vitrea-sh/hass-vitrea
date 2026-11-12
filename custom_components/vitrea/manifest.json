@@ -1,6 +1,11 @@
 {
   "domain": "vitrea",
   "name": "Vitrea",
+  "categories": [
+    "lighting.lighting_systems",
+    "hubs_protocols.smart_home_hubs",
+    "blinds_curtains"
+  ],
   "codeowners": [
     "@n0amvitrea"
   ],
